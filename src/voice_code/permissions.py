@@ -41,6 +41,10 @@ class PermissionRequest:
     tool_input: dict[str, object]
     reason: str = ""
     is_destructive: bool = False
+    session_id: str | None = None
+    task_id: str | None = None
+    agent_type: str | None = None
+    parent_session_id: str | None = None
 
 
 class PermissionApprover(Protocol):
@@ -56,6 +60,10 @@ class PermissionContext:
     session_whitelist: set[str] = field(default_factory=set)
     output_format: OutputFormat = OutputFormat.TEXT
     approver: PermissionApprover | None = None
+    session_id: str | None = None
+    task_id: str | None = None
+    agent_type: str | None = None
+    parent_session_id: str | None = None
 
 
 @dataclass
@@ -148,6 +156,10 @@ def evaluate_tool_permission(
                     tool_input=tool_input,
                     reason=f"Dangerous Bash command detected: {command[:100]}",
                     is_destructive=True,
+                    session_id=ctx.session_id,
+                    task_id=ctx.task_id,
+                    agent_type=ctx.agent_type,
+                    parent_session_id=ctx.parent_session_id,
                 ),
             )
 
@@ -166,6 +178,10 @@ def evaluate_tool_permission(
                 tool_input=tool_input,
                 reason="This tool may have destructive effects.",
                 is_destructive=True,
+                session_id=ctx.session_id,
+                task_id=ctx.task_id,
+                agent_type=ctx.agent_type,
+                parent_session_id=ctx.parent_session_id,
             ),
         )
 
@@ -182,6 +198,10 @@ def evaluate_tool_permission(
         request=PermissionRequest(
             tool_name=tool_name,
             tool_input=tool_input,
+            session_id=ctx.session_id,
+            task_id=ctx.task_id,
+            agent_type=ctx.agent_type,
+            parent_session_id=ctx.parent_session_id,
         ),
     )
 
@@ -209,7 +229,14 @@ def can_use_tool(
     if decision.behavior != PermissionBehavior.ASK:
         return decision
 
-    request = evaluation.request or PermissionRequest(tool_name=tool_name, tool_input=tool_input)
+    request = evaluation.request or PermissionRequest(
+        tool_name=tool_name,
+        tool_input=tool_input,
+        session_id=ctx.session_id,
+        task_id=ctx.task_id,
+        agent_type=ctx.agent_type,
+        parent_session_id=ctx.parent_session_id,
+    )
     approver = ctx.approver or StdinPermissionApprover()
     final_decision = approver.approve(request)
     if final_decision.behavior == PermissionBehavior.ALLOW and (

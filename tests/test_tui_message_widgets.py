@@ -32,4 +32,4 @@ async def test_turn_widget_renders_rows_on_initial_mount():
 
         assert len(rows) == 2
         assert widget._header_text is not None
-        assert "Turn 1" in str(widget._header_text)
+        assert "Turn 01" in str(widget._header_text)

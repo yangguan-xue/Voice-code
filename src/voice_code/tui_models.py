@@ -1,6 +1,6 @@
 """Structured TUI message models.
 
-These classes are the Textual-side equivalent of the normalized
+These classes are the Textual-side equivalent of cc-haha's normalized
 message layer: the screen owns a list of turn/message records, while renderers
 decide how each entry appears.
 """
@@ -24,7 +24,7 @@ class TurnEntry:
     tool_args: dict[str, Any] = field(default_factory=dict)
     tool_result: str = ""
     tool_result_preview: str = ""
-    is_result_collapsed: bool = True
+    is_result_collapsed: bool = False
 
 
 @dataclass

@@ -41,30 +41,39 @@ class PermissionDialog(ModalScreen[PermissionDecision]):
     DEFAULT_CSS = """
     PermissionDialog {
         align: center middle;
-        background: rgba(0, 0, 0, 0.55);
+        background: rgba(0, 0, 0, 0.72);
     }
     #permission-dialog {
-        width: 80%;
-        max-width: 96;
+        width: 92;
+        max-width: 108;
         height: auto;
-        background: #0d1117;
-        border: round #e6b450;
-        padding: 1 2;
+        background: #000000;
+        border: round #ff3333;
+        padding: 1 2 2 2;
     }
     #permission-title {
         text-style: bold;
-        color: #ffcc66;
+        color: #ff3333;
+        margin-bottom: 1;
+    }
+    #permission-meta {
+        color: #999999;
         margin-bottom: 1;
     }
     #permission-body {
         margin-bottom: 1;
     }
     #permission-actions {
-        align-horizontal: right;
+        align-horizontal: left;
         height: auto;
+        margin-top: 1;
     }
     #permission-actions Button {
-        margin-left: 1;
+        margin-right: 1;
+    }
+    #permission-shortcuts {
+        color: #666666;
+        margin-top: 1;
     }
     """
 
@@ -74,13 +83,24 @@ class PermissionDialog(ModalScreen[PermissionDecision]):
 
     def compose(self) -> ComposeResult:
         title = Text()
-        title.append("Permission request", style="bold #ffcc66")
-        title.append(f"  {self.request.tool_name}", style="bold #8ab4f8")
+        title.append("Permission Request", style="bold #ff3333")
+        title.append(f"  {self.request.tool_name}", style="bold #4488ff")
         if self.request.is_destructive:
-            title.append("  destructive", style="bold red")
+            title.append("  destructive", style="bold #ffffff on #ff3333")
+
+        meta = Text()
+        meta.append("这次操作需要明确审批。", style="bold #e0e0e0")
+        if self.request.reason:
+            meta.append("  ")
+            meta.append(self.request.reason, style="#999999")
+        source = _permission_source_label(self.request)
+        if source:
+            meta.append("\n")
+            meta.append(source, style="bold #4488ff")
 
         yield Vertical(
             Static(title, id="permission-title"),
+            Static(meta, id="permission-meta"),
             Static(self._render_body(), id="permission-body"),
             Horizontal(
                 Button("Deny", id="deny", variant="error"),
@@ -88,8 +108,15 @@ class PermissionDialog(ModalScreen[PermissionDecision]):
                 Button("Always allow", id="always", variant="success"),
                 id="permission-actions",
             ),
+            Static(
+                "Esc / N 拒绝  ·  Enter / Y 允许一次  ·  A 本会话始终允许",
+                id="permission-shortcuts",
+            ),
             id="permission-dialog",
         )
+
+    def on_mount(self) -> None:
+        self.query_one("#allow", Button).focus()
 
     async def _on_key(self, event: Key) -> None:
         key = event.key.lower()
@@ -112,21 +139,17 @@ class PermissionDialog(ModalScreen[PermissionDecision]):
             self._allow_session()
 
     def _render_body(self) -> Panel:
-        body = Text()
-        if self.request.reason:
-            body.append("Reason: ", style="bold")
-            body.append(self.request.reason)
-            body.append("\n\n")
-        body.append("Input:\n", style="bold")
         return Panel(
             Syntax(
                 self._format_input(),
                 "json",
                 theme="monokai",
                 word_wrap=True,
-                background_color="#11161d",
+                background_color="#000000",
             ),
-            border_style="#30363d",
+            title=" input ",
+            title_align="left",
+            border_style="#333333",
             padding=(0, 1),
         )
 
@@ -162,3 +185,11 @@ class PermissionDialog(ModalScreen[PermissionDecision]):
                 message="Allowed for the rest of this session.",
             )
         )
+
+
+def _permission_source_label(request: PermissionRequest) -> str:
+    if request.task_id and request.agent_type:
+        return f"来源: 子 agent {request.agent_type}  ·  task {request.task_id}"
+    if request.task_id:
+        return f"来源: task {request.task_id}"
+    return ""
