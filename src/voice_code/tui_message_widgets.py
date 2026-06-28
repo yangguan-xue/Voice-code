@@ -9,8 +9,8 @@ from rich.text import Text
 from textual.containers import Vertical
 from textual.widgets import Static
 
-from voice_code.theme import TOOL_COLORS, TEXT_DIM
 from voice_code.clipboard import copy_to_clipboard
+from voice_code.theme import TEXT_DIM, TOOL_COLORS
 from voice_code.transcript_view import PlainTurn, PlainTurnEntry, render_turn_as_plain_text
 from voice_code.tui_message_tree import (
     TuiRow,

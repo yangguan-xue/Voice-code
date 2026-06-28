@@ -44,6 +44,10 @@ from voice_code.permissions import PermissionBehavior, PermissionDecision
 from voice_code.runtime import bootstrap_runtime
 from voice_code.session import TranscriptWriter
 from voice_code.subagents.service import SubagentService, get_or_create_service
+from voice_code.theme import (
+    BG_SECONDARY,
+    BORDER_PRIMARY,
+)
 from voice_code.transcript_view import (
     PlainTurn,
     last_assistant_text,
@@ -71,14 +75,6 @@ from voice_code.tui_query_events import (
     apply_reasoning_event,
     apply_text_event,
     commit_streaming_buffer,
-)
-from voice_code.theme import (
-    BG_PRIMARY,
-    BG_SECONDARY,
-    BORDER_PRIMARY,
-    TEXT_PRIMARY,
-    TEXT_SECONDARY,
-    TEXT_DIM,
 )
 from voice_code.tui_runtime import (
     QueryRuntimeState,

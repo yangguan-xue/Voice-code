@@ -17,16 +17,16 @@ from rich.syntax import Syntax
 from rich.text import Text
 
 from voice_code.theme import (
-    BG_SURFACE,
-    BG_SECONDARY,
     BG_CODE,
+    BG_SECONDARY,
+    BG_SURFACE,
     BORDER_PRIMARY,
     BORDER_SECONDARY,
+    CODE_THEME,
+    TEXT_DIM,
     TEXT_PRIMARY,
     TEXT_SECONDARY,
-    TEXT_DIM,
     TOOL_COLORS,
-    CODE_THEME,
 )
 from voice_code.tui_models import TurnBlock, TurnEntry
 
