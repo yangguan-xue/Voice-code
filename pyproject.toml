@@ -57,6 +57,10 @@ select = ["E", "F", "I", "N", "W", "UP"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+markers = [
+    "voice: voice-related tests (skip if no audio hardware)",
+]
 
 [tool.mypy]
 python_version = "3.12"
