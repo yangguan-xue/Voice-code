@@ -13,6 +13,9 @@ import time
 import wave
 from collections.abc import Callable
 
+from rich.console import Console
+from rich.markdown import Markdown as RichMarkdown
+
 from voice_code.agent.types import AgentEvent, EventType
 from voice_code.voice.agent_bridge import AgentBridge
 from voice_code.voice.audio_player import AudioPlayer
@@ -44,6 +47,8 @@ from voice_code.voice.voice_display import VoiceDisplay
 from voice_code.voice.wakeword import WakeWordDetector
 
 logger = logging.getLogger(__name__)
+
+_rich_console = Console()
 
 # 唤醒词音频累积：~2 秒 @ 16kHz mono 16bit
 _WAKE_CHUNK_SECONDS = 2.0
@@ -166,7 +171,7 @@ class VoiceOrchestrator:
     async def handle_wake_word(self) -> None:
         """处理唤醒词检测。"""
         self._wake_triggered = True
-        print("    唤醒成功")
+        _rich_console.print("  ✅ 唤醒成功")
         await self._transition_to(VoiceState.LISTENING, "wake_word")
         await self._speak(WAKE_CONFIRM_TEXT)
 
@@ -196,13 +201,20 @@ class VoiceOrchestrator:
             self._reset_idle_timer()
             return
 
+        stripped = text.strip()
         # 无中文的短文本（Yeah、the、.等） → 非命令
-        if not re.search(r'[\u4e00-\u9fff]', text) and len(text.strip()) < 10:
-            logger.info("Orchestrator: ignoring non-Chinese filler '%s'", text.strip())
+        if not re.search(r'[\u4e00-\u9fff]', stripped) and len(stripped) < 10:
+            logger.info("Orchestrator: ignoring non-Chinese filler '%s'", stripped)
             self._reset_idle_timer()
             return
 
-        print(f"    你说: {text[:150]}{'…' if len(text) > 150 else ''}")
+        # 嗯开头的犹豫词 → 非命令
+        if re.match(r'^嗯+', stripped) and len(stripped) < 15:
+            logger.info("Orchestrator: ignoring hesitation '%s'", stripped)
+            self._reset_idle_timer()
+            return
+
+        _rich_console.print(f"  🎤 {text[:200]}")
 
         # Step 2: Classify
         self._timing.start_stage()
@@ -419,7 +431,7 @@ class VoiceOrchestrator:
             return
 
     async def _submit_agent_command(self, text: str) -> None:
-        print("    ⚙️ 小奕正在处理…")
+        _rich_console.print("  ⚙️ 处理中…")
         result = await self._run_agent_turn(text)
         if result is None:
             await self._speak(AGENT_FAILED_TEXT)
@@ -452,8 +464,6 @@ class VoiceOrchestrator:
             self._timing.end_agent(result_len)
             return None
         self._timing.end_agent(result_len)
-        if result.strip():
-            print(f"\n  🤖 Agent: {result[:500]}{'...' if len(result) > 500 else ''}")
         return result
 
     # ---- TTS + Playback ----
@@ -497,7 +507,6 @@ class VoiceOrchestrator:
                 if prev_state != VoiceState.SPEAKING:
                     await self._enter_speaking()
                 self._timing.start_stage()
-                assert self._loop is not None
                 await self._loop.run_in_executor(None, self._player.play_wav_bytes, audio)
                 self._timing.end_playback()
                 if prev_state != VoiceState.SPEAKING:
@@ -512,7 +521,7 @@ class VoiceOrchestrator:
                 await self._enter_speaking()
 
             first = True
-            async for chunk, sr in stream:  # type: ignore[attr-defined]
+            async for chunk, sr in stream:
                 if first:
                     self._timing.end_tts(0)
                     self._timing.start_stage()
@@ -630,7 +639,7 @@ class VoiceOrchestrator:
         return db >= _WAKE_RMS_THRESHOLD_DB
 
     async def _on_agent_event(self, event: AgentEvent) -> None:
-        """agent 事件流式回调 — 打印到终端。"""
+        """agent 事件流式回调 — 缓冲完整段落再渲染 Markdown。"""
         t = event.type
 
         if t == EventType.TEXT:
@@ -638,39 +647,22 @@ class VoiceOrchestrator:
             if not chunk:
                 return
             self._agent_text_buf += chunk
-            # 每遇换行或满 60 字刷出一行
-            while "\n" in self._agent_text_buf:
-                line, self._agent_text_buf = self._agent_text_buf.split("\n", 1)
-                if line.strip():
-                    print(f"  📝 {line.strip()[:300]}")
-            if len(self._agent_text_buf) >= 60:
-                print(f"  📝 {self._agent_text_buf.strip()[:300]}")
-                self._agent_text_buf = ""
+            while "\n\n" in self._agent_text_buf:
+                block, self._agent_text_buf = self._agent_text_buf.split("\n\n", 1)
+                self._render_md(block)
 
-        else:
-            # 非 TEXT 事件：先定稿剩余缓冲
+        elif t == EventType.FINISH:
             if self._agent_text_buf.strip():
-                print(f"  📝 {self._agent_text_buf.strip()[:300]}")
+                self._render_md(self._agent_text_buf)
                 self._agent_text_buf = ""
+            _rich_console.print("  ✅ 完成")
 
-            if t == EventType.REASONING:
-                content = str(event.content)
-                if content.strip():
-                    print(f"  💭 {content[:200]}{'…' if len(content) > 200 else ''}")
-
-            elif t == EventType.TOOL_CALL:
-                name = getattr(event, "tool_name", "") or ""
-                inp = str(getattr(event, "tool_input", "") or "")[:200]
-                print(f"  🔧 {name}({inp[:120]}{'…' if len(inp) > 120 else ''})")
-
-            elif t == EventType.TOOL_RESULT:
-                result = str(event.content or "")[:200]
-                if result.strip():
-                    print(f"  📋 → {result[:200]}{'…' if len(result) > 200 else ''}")
-
-            elif t == EventType.FINISH:
-                reason = getattr(event, "finish_reason", "") or ""
-                print(f"  ✅ agent 完成 (finish_reason={reason})")
+    def _render_md(self, text: str) -> None:
+        text = text.strip()
+        if not text:
+            return
+        if text.replace("|", "").replace("-", "").strip():
+            _rich_console.print(RichMarkdown(text))
 
     # ---- Internal callbacks (from mic thread) ----
 

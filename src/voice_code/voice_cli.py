@@ -112,16 +112,17 @@ class _VerboseTtsMixin:
         cfg_value: float | None = None,
         inference_timesteps: int | None = None,
     ) -> bytes:
-        print(f"\n  🔊 播报: {text[:120]}{'...' if len(text) > 120 else ''}")
-        return await super().synthesize_text(  # type: ignore[misc]
+        display = text[:500]
+        print(f"\n  🔊 播报: {display}{'...' if len(text) > 500 else ''}")
+        return await super().synthesize_text(
             text,
             seed=seed,
             cfg_value=cfg_value,
             inference_timesteps=inference_timesteps,
-        )
+        )  # type: ignore[misc]
 
 
-class _VerboseTtsClient(_VerboseTtsMixin, VoxcTtsClient):  # type: ignore[misc]
+class _VerboseTtsClient(_VerboseTtsMixin, VoxcTtsClient):
     """远端自建 TTS 包装器 — VoxCPM2。"""
     pass
 
@@ -129,9 +130,22 @@ class _VerboseTtsClient(_VerboseTtsMixin, VoxcTtsClient):  # type: ignore[misc]
 class _VerboseStepFunTtsClient(_VerboseTtsMixin, StepFunTTSClient):
     """Step Fun TTS 包装器。"""
 
-    async def synthesize_text(self, text: str) -> bytes:  # type: ignore[override]
-        print(f"\n  🔊 播报: {text[:120]}{'...' if len(text) > 120 else ''}")
+    async def synthesize_text(self, text: str, **kwargs: object) -> bytes:  # type: ignore[override]
+        display = text[:500]
+        print(f"\n  🔊 播报: {display}{'...' if len(text) > 500 else ''}")
         return await StepFunTTSClient.synthesize_text(self, text)
+
+    async def synthesize_stream(self, text: str, **kwargs: object):  # type: ignore[override]
+        """Step Fun TTS 合成完整音频后以单块流式返回。"""
+        import io
+        import wave
+        wav_bytes = await self.synthesize_text(text)
+        with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
+            frames = wf.readframes(wf.getnframes())
+            sr = wf.getframerate()
+            import numpy as np
+            arr = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+            yield arr, sr
 
 
 async def run(args: argparse.Namespace) -> None:
@@ -151,20 +165,20 @@ async def run(args: argparse.Namespace) -> None:
     print(f"  wake word: {args.wake_word}")
     print(f"  start mode: {'listening' if args.no_wake else 'sleeping (wake word)'}")
     print(f"  VAD min dB: {args.min_db}")
-    print("  Press Ctrl+C to exit\n")
+    print("  Say \"你好\" or wake word to start, /quit to exit\n")
 
     # Build components
     player = AudioPlayer()
 
     if use_stepfun:
         stt_client: SupportsSttClient = StepFunASRClient(api_key=stepfun_key)
-        tts_client: SupportsTtsClient = _VerboseStepFunTtsClient(  # type: ignore[assignment]
+        tts_client: SupportsTtsClient = _VerboseStepFunTtsClient(
             api_key=stepfun_key,
             voice=args.stepfun_voice,
         )
     else:
         stt_client = SttClient(base_url=f"{args.stt_url}/transcribe")
-        tts_client = _VerboseTtsClient(base_url=f"{args.tts_url}/tts")  # type: ignore[assignment]
+        tts_client = _VerboseTtsClient(base_url=f"{args.tts_url}/tts")
 
     # Check services
     stt_ok = await stt_client.health_check()
@@ -192,21 +206,12 @@ async def run(args: argparse.Namespace) -> None:
         print()
         return
 
-    # Agent bridge — summary model 用于口语总结
-    if use_stepfun:
-        summary_model = ChatOpenAI(
-            model="step-3.7-flash",
-            base_url="https://api.stepfun.com/step_plan/v1",
-            api_key=SecretStr(stepfun_key) if stepfun_key else SecretStr(""),
-            temperature=0.0,
-            timeout=10.0,
-        )
-    else:
-        summary_model = init_model(
-            profile=args.profile,
-            temperature=0.0,
-            timeout=10.0,
-        )
+    # Agent bridge — summary model 用主 agent 同款模型做口语总结
+    summary_model = init_model(
+        profile=args.profile,
+        temperature=0.0,
+        timeout=10.0,
+    )
     bridge = AgentBridge(profile=args.profile, summary_model=summary_model)
     await bridge.start()
     print(f"  Agent ready: session={bridge._runtime.session_id}")  # type: ignore[union-attr]
@@ -261,7 +266,7 @@ async def run(args: argparse.Namespace) -> None:
         print("\n>>> 已跳过唤醒词，直接进入聆听模式。请说话...")
     else:
         await orchestrator.start()
-        print("\n>>> 正在监听唤醒词... 说\"codex\"唤醒我。")
+        print(f"\n>>> 正在监听唤醒词... 说\"{args.wake_word}\"唤醒我。")
 
     # Keep running until Ctrl+C
     loop = asyncio.get_running_loop()
@@ -280,6 +285,10 @@ async def run(args: argparse.Namespace) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
+    # 加载 .env 文件（让 STEPFUN_API_KEY 等环境变量生效）
+    from voice_code.llm.models import _load_dotenv
+    _load_dotenv()
+
     args = parse_args(argv)
     _setup_logging(args.debug)
     try:

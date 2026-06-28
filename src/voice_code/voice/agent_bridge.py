@@ -15,7 +15,7 @@ from voice_code.agent.loop import agent_loop
 from voice_code.agent.types import AgentEvent, EventType
 from voice_code.permissions import PermissionContext
 from voice_code.runtime import RuntimeBootstrap, bootstrap_runtime
-from voice_code.voice.types import SUMMARY_FALLBACK_CHARS, SUMMARY_MAX_CHARS
+from voice_code.voice.types import SUMMARY_FALLBACK_CHARS
 
 logger = logging.getLogger(__name__)
 
@@ -237,21 +237,18 @@ class AgentBridge:
                     SystemMessage(
                         content=(
                             "你就是小奕，是哥哥的编程助手。"
-                            "你的大脑负责思考执行任务，你负责把大脑想的话说出来。"
-                            "直接以第一人称对哥哥说话。"
-                            "用自然的交流语言，不要照搬大脑的原文。"
-                            f"不超过{SUMMARY_MAX_CHARS}字。"
-                            "先告诉哥哥任务做完了没有，做成了什么。"
-                            "不要列举具体文件名、路径、接口地址，只需要说数量（几个文件、几个接口）。"
-                            "大量英文连续出现时，不要逐一念出，用中文概括含义即可。"
-                            "去掉代码、符号、标记，严格输出纯文本。"
-                            "保留英文专有名词和技术术语。"
-                            "开头叫哥哥，后面加空格和逗号让播报停顿。"
+                            "把大脑想的话压缩成一句口语，50字以内。"
+                            "先说结论，再报数量（几个文件、几个接口）。"
+                            "只许出现大写英文缩写（API、JSON 等），"
+                            "禁止其他任何英文。"
+                            "禁止文件名、路径、目录名、接口地址，用数量概括。"
+                            "去掉代码、符号、标记、括号。"
+                            "开头叫哥哥。"
                         )
                     ),
                     HumanMessage(content=prompt),
                 ],
-                max_tokens=SUMMARY_MAX_CHARS * 2,  # type: ignore[call-arg]
+                max_tokens=100,  # type: ignore[call-arg]
             )
             content = response.content
             if isinstance(content, list):
@@ -264,11 +261,11 @@ class AgentBridge:
             else:
                 spoken = str(content)
             result = spoken.strip()
-            if not result or len(result) > SUMMARY_MAX_CHARS * 2:
+            if not result:
                 cleaned = self._strip_lowercase_english(self._strip_markdown(text))
                 return cleaned[:SUMMARY_FALLBACK_CHARS]
-            # 轻量清理：符号、表情、多余空格
-            result = re.sub(r'[\U0001F300-\U0001F9FF`*_~#\-/\\()（）【】\[\]{}]', '', result)
+            # 轻量清理：只去掉 emoji 和多余空格
+            result = re.sub(r'[\U0001F300-\U0001F9FF\U0001F600-\U0001F64F]', '', result)
             result = re.sub(r' +', ' ', result).strip()
             logger.info("AgentBridge: summarized %d -> %d chars", len(text), len(result))
             return result

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from voice_code.subagents.types import AgentTask, TaskStatus
+
 
 @dataclass
 class QueryRuntimeState:
@@ -25,6 +27,20 @@ class RuntimeDisplay:
     thinking_text: str = ""
     status_phase: str = ""
     tool_count: int = 0
+
+
+@dataclass(frozen=True)
+class TaskDisplay:
+    """Compact task summary for the TUI status area."""
+
+    running: int = 0
+    completed: int = 0
+    failed: int = 0
+    cancelled: int = 0
+
+    @property
+    def total(self) -> int:
+        return self.running + self.completed + self.failed + self.cancelled
 
 
 def phase_label(phase: str) -> str:
@@ -68,4 +84,27 @@ def build_runtime_display(state: QueryRuntimeState) -> RuntimeDisplay:
         thinking_text=phase_label(state.current_phase),
         status_phase=state.current_phase,
         tool_count=0,
+    )
+
+
+def build_task_display(tasks: list[AgentTask]) -> TaskDisplay:
+    """Summarize subagent tasks for the status bar."""
+    running = 0
+    completed = 0
+    failed = 0
+    cancelled = 0
+    for task in tasks:
+        if task.status in {TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.WAITING_PERMISSION}:
+            running += 1
+        elif task.status == TaskStatus.COMPLETED:
+            completed += 1
+        elif task.status == TaskStatus.FAILED:
+            failed += 1
+        elif task.status == TaskStatus.CANCELLED:
+            cancelled += 1
+    return TaskDisplay(
+        running=running,
+        completed=completed,
+        failed=failed,
+        cancelled=cancelled,
     )

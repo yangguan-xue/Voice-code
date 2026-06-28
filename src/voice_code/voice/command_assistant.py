@@ -357,43 +357,95 @@ class CommandAssistant:
         if not text:
             return None
 
-        # 1) 尝试从 markdown 代码块提取（任意位置）
+        # 1) 尝试从 markdown 代码块提取
+        #    先找完整闭合的，再试试可能被截断的
         match = re.search(r"```(?:json)?\s*\n?(\{[\s\S]*?\})\s*\n?```", text)
         if match:
             return match.group(1).strip()
+        # 尝试从代码块提取（可能被截断，没有闭合 ```）
+        for pattern in (
+            r"```(?:json)?\s*\n?(\{[\s\S]*?\})\s*\n?```",  # 完整闭合
+            r"```(?:json)?\s*\n?(\{[\s\S]*?\})\s*",        # 闭合 JSON 后无 ```
+            r"```(?:json)?\s*\n?(\{[\s\S]*\})",            # 尽可能匹配到最后一个 }
+            r"```(?:json)?\s*\n?(\{[\s\S]*)",              # 无 } 也收下
+        ):
+            match = re.search(pattern, text)
+            if match:
+                candidate = match.group(1).strip()
+                break
+        else:
+            # 2) 直接找最外层花括号
+            start = text.find("{")
+            end = text.rfind("}")
+            if start == -1 or (end != -1 and end <= start):
+                return None
+            candidate = text[start:] if end == -1 else text[start:end + 1]
 
-        # 2) 找最外层花括号
-        start = text.find("{")
-        end = text.rfind("}")
-        if start == -1 or end == -1 or end <= start:
-            return None
-        candidate = text[start : end + 1]
-
-        # 3) 直接用 json.loads 验证
         import json as _json
+
+        # 1) 直接用 json.loads 验证
         try:
             _json.loads(candidate)
             return candidate
         except _json.JSONDecodeError:
             pass
 
-        # 4) 尝试修复常见问题：去掉尾随逗号、多余换行
-        fixed = candidate
-        # 去掉对象/数组末尾多余的逗号
-        fixed = re.sub(r",\s*}", "}", fixed)
+        # 2) 尝试修复常见问题
+        fixed = re.sub(r",\s*}", "}", candidate)
         fixed = re.sub(r",\s*]", "]", fixed)
-        # 去掉不可见控制字符
         fixed = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", fixed)
+        fixed = re.sub(r"\r?\n", "", fixed)
         try:
             _json.loads(fixed)
             return fixed
         except _json.JSONDecodeError:
             pass
 
-        # 5) 逐段截断：去掉末尾不完整部分，尝试最短合法 JSON
+        # 3) 找到最深层闭合的 {} 区间（处理截断情况）
+        depth = 0
+        best_close = -1
+        for i, ch in enumerate(candidate):
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+            if depth == 0 and ch == "}":
+                best_close = i
+        if best_close > 0:
+            sub = candidate[:best_close + 1]
+            try:
+                _json.loads(sub)
+                return sub
+            except _json.JSONDecodeError:
+                pass
+
+        # 4) 尝试修复不完整 JSON：补全未闭合的引号和花括号
+        repaired = candidate.rstrip()
+        repaired = re.sub(r"\r?\n", "", repaired)
+        in_string = False
+        escaped = False
+        for ch in repaired:
+            if escaped:
+                escaped = False
+                continue
+            if ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = not in_string
+        if in_string:
+            repaired += '"'
+        if repaired.count("{") > repaired.count("}"):
+            repaired += "}" * (repaired.count("{") - repaired.count("}"))
+        if repaired != candidate:
+            try:
+                _json.loads(repaired)
+                return repaired
+            except _json.JSONDecodeError:
+                pass
+
+        # 5) 逐段截断：从末尾向前找最短合法 JSON
         for trim_pos in range(len(candidate), 0, -1):
             sub = candidate[:trim_pos]
-            # 只检查完整的花括号配对
             if sub.count("{") != sub.count("}"):
                 continue
             try:
@@ -401,6 +453,9 @@ class CommandAssistant:
                 return sub
             except _json.JSONDecodeError:
                 continue
+        return None
+
+
 
         return None
 

@@ -1,6 +1,6 @@
 """Message renderers for the Textual TUI.
 
-Split between Message and a components/messages layout:
+This mirrors cc-haha's split between Message.tsx and components/messages/*:
 Message routes a structured entry to a specialized renderer, while the screen
 only owns state and dispatch.
 """
@@ -16,32 +16,31 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.text import Text
 
+from voice_code.theme import (
+    BG_SURFACE,
+    BG_SECONDARY,
+    BG_CODE,
+    BORDER_PRIMARY,
+    BORDER_SECONDARY,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
+    TEXT_DIM,
+    TOOL_COLORS,
+    CODE_THEME,
+)
 from voice_code.tui_models import TurnBlock, TurnEntry
 
-TOOL_COLORS = {
-    "bash": "bold #ff8800",
-    "read": "bold #4488ff",
-    "write": "bold #22cc66",
-    "edit": "bold #ffcc00",
-    "glob": "bold #22cccc",
-    "grep": "bold #cc44ff",
-    "todo_write": "bold #ff66aa",
-    "ask_user_question": "bold #66aaff",
-    "web_fetch": "bold #66ff88",
-}
-
-CODE_INFO_STYLE = "dim #7f8c98"
+CODE_INFO_STYLE = f"dim {TEXT_DIM}"
 TEXT_DIM_STYLE = "dim"
-CODE_LANG_STYLE = "bold #8ab4f8"
-CODE_THEME = "monokai"
-CODE_BACKGROUND = "#1f2430"
-ASSISTANT_PANEL_BORDER = "#2f3a46"
-ASSISTANT_PANEL_BG = "#11161d"
-ASSISTANT_TITLE_STYLE = "bold #c9d1d9"
-TOOL_PANEL_BG = "#0f141a"
-TOOL_PANEL_BORDER = "#26313b"
-THINKING_PANEL_BORDER = "#39424e"
-THINKING_PANEL_BG = "#0f141a"
+CODE_LANG_STYLE = f"bold {TEXT_SECONDARY}"
+CODE_BACKGROUND = BG_CODE
+ASSISTANT_PANEL_BORDER = BORDER_SECONDARY
+ASSISTANT_PANEL_BG = BG_SECONDARY
+ASSISTANT_TITLE_STYLE = f"bold {TEXT_PRIMARY}"
+TOOL_PANEL_BG = BG_SURFACE
+TOOL_PANEL_BORDER = BORDER_PRIMARY
+THINKING_PANEL_BORDER = BORDER_SECONDARY
+THINKING_PANEL_BG = BG_SURFACE
 
 
 @dataclass
@@ -125,7 +124,7 @@ class AssistantThinkingMessage:
     def render(self) -> Panel:
         return Panel(
             Text(self.text, style="dim"),
-            title=Text(" thinking ", style="bold #8b949e"),
+            title=Text(" thinking ", style="bold #666666"),
             border_style=THINKING_PANEL_BORDER,
             style=f"on {THINKING_PANEL_BG}",
             padding=(0, 1),
@@ -190,15 +189,15 @@ class ToolUseMessage:
             border_style = "red"
         elif is_running:
             state_text = "running"
-            state_style = "bold #e6b450"
-            border_style = "#e6b450"
+            state_style = "bold #ffaa00"
+            border_style = "#ffaa00"
         elif is_expanded:
             state_text = "expanded"
-            state_style = "bold #7ee787"
-            border_style = "#7ee787"
+            state_style = "bold #33cc33"
+            border_style = "#33cc33"
         else:
             state_text = "collapsed"
-            state_style = "bold #8b949e"
+            state_style = "bold #666666"
             border_style = TOOL_PANEL_BORDER
 
         chevron = "v" if is_expanded else ">" if entry.tool_result else "*"
@@ -343,7 +342,7 @@ class Messages:
                 self.turn.user_input,
                 first_prefix="> ",
                 rest_prefix="  ",
-                style="bold #00ff88",
+                style="bold #33cc33",
             )
             renderables.append(user_text)
 

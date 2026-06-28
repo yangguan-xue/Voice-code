@@ -1,6 +1,6 @@
 """TUI message tree primitives.
 
-This module defines a message-row model that is independent from
+This module defines a cc-haha-like message-row model that is independent from
 the current Textual screen implementation. It is the first step toward
 replacing the turn-level TUI with a message-level tree.
 """
@@ -35,7 +35,7 @@ class TuiRow:
     tool_args: dict[str, Any] = field(default_factory=dict)
     tool_result: str = ""
     tool_result_preview: str = ""
-    is_result_collapsed: bool = True
+    is_result_collapsed: bool = False
     is_streaming: bool = False
     source_index: int = 0
 
@@ -49,7 +49,7 @@ class TuiEntry:
     tool_args: dict[str, Any] = field(default_factory=dict)
     tool_result: str = ""
     tool_result_preview: str = ""
-    is_result_collapsed: bool = True
+    is_result_collapsed: bool = False
     is_result_manual: bool = False
     is_live: bool = False
 
@@ -57,11 +57,12 @@ class TuiEntry:
 class _TurnLike(Protocol):
     turn_id: int
     user_input: str
-    entries: list[TuiEntry]
+    entries: Sequence[TuiEntry]
     status: str
 
 
-_MutableTurnLike = _TurnLike
+class _MutableTurnLike(_TurnLike, Protocol):
+    entries: list[TuiEntry]
 
 
 def _find_trailing_entry_index(
@@ -341,7 +342,7 @@ def set_turn_tool_result(
     tool_call_id: str,
     tool_result: str,
     tool_result_preview: str,
-    is_result_collapsed: bool = True,
+    is_result_collapsed: bool = False,
 ) -> bool:
     for entry in reversed(turn.entries):
         if getattr(entry, "kind", "") == "tool_pair" and getattr(

@@ -1,4 +1,4 @@
-"""Textual widgets for the TUI message tree."""
+"""Textual widgets for the cc-haha-like TUI message tree."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from rich.text import Text
 from textual.containers import Vertical
 from textual.widgets import Static
 
+from voice_code.theme import TOOL_COLORS, TEXT_DIM
 from voice_code.clipboard import copy_to_clipboard
 from voice_code.transcript_view import PlainTurn, PlainTurnEntry, render_turn_as_plain_text
 from voice_code.tui_message_tree import (
@@ -17,19 +18,7 @@ from voice_code.tui_message_tree import (
     set_turn_tool_result_collapsed,
 )
 
-TOOL_COLORS = {
-    "bash": "bold #ff8800",
-    "read": "bold #4488ff",
-    "write": "bold #22cc66",
-    "edit": "bold #ffcc00",
-    "glob": "bold #22cccc",
-    "grep": "bold #cc44ff",
-    "todo_write": "bold #ff66aa",
-    "ask_user_question": "bold #66aaff",
-    "web_fetch": "bold #66ff88",
-}
-
-TEXT_DIM_STYLE = "dim"
+TEXT_DIM_STYLE = f"dim {TEXT_DIM}"
 
 
 def _clean_tool_use_error(text: str) -> str:
@@ -61,55 +50,66 @@ def _inline_preview(text: str, limit: int) -> str:
     return preview[:limit] + "…"
 
 
+def _row_excerpt(text: str, limit: int = 56) -> str:
+    preview = " ".join(text.strip().split())
+    if len(preview) <= limit:
+        return preview
+    return preview[: limit - 1] + "…"
+
+
 def render_tui_row(row: TuiRow) -> RenderableType:
     if row.kind == "system_info":
         text = Text()
+        text.append("status\n", style="bold #666666")
         _append_wrapped_lines(
             text,
             row.text,
-            first_prefix="ℹ ",
+            first_prefix="• ",
             rest_prefix="  ",
-            style=TEXT_DIM_STYLE,
+            style="#999999",
         )
         return text
 
     if row.kind == "system_error":
         text = Text()
+        text.append("error\n", style="bold #ff6666")
         _append_wrapped_lines(
             text,
             row.text[:300],
-            first_prefix="✗ ",
+            first_prefix="• ",
             rest_prefix="  ",
-            style="bold red",
+            style="bold #ff6666",
         )
         return text
 
     if row.kind == "user_input":
         text = Text()
+        text.append("you\n", style="bold #33cc33")
         _append_wrapped_lines(
             text,
             row.text,
-            first_prefix="❯ ",
+            first_prefix="> ",
             rest_prefix="  ",
-            style="bold #00ff88",
+            style="bold #e0e0e0",
         )
         return text
 
     if row.kind == "assistant_thinking":
         if not row.text.strip():
-            return Text("∴ Thinking…", style="dim italic")
+            return Text("thinking\n模型正在整理上下文…", style="italic #999999")
         return Group(
-            Text("∴ Thinking…", style="dim italic"),
-            Text(row.text, style="dim"),
+            Text("thinking", style="italic #666666"),
+            Text(row.text, style="#999999"),
         )
 
     if row.kind == "assistant_tool_use":
         args = ", ".join(f"{k}={repr(v)[:40]}" for k, v in row.tool_args.items())
         title = Text()
-        title.append("⚡ ", style=TOOL_COLORS.get(row.tool_name, "bold #ffaa00"))
+        title.append("tool ", style="bold #666666")
+        title.append("● ", style=TOOL_COLORS.get(row.tool_name, "bold #ffaa00"))
         title.append(row.tool_name, style=TOOL_COLORS.get(row.tool_name, "bold #ffaa00"))
         if args:
-            title.append(f"  {args}", style="dim")
+            title.append(f"  {args}", style="#999999")
         has_error = "<tool_use_error>" in row.tool_result
         has_result = bool(row.tool_result)
         is_expanded = has_result and not row.is_result_collapsed
@@ -125,7 +125,7 @@ def render_tui_row(row: TuiRow) -> RenderableType:
             state_label = "  running"
         else:
             state_label = "  queued"
-        title.append(state_label, style="dim")
+        title.append(state_label, style="dim #666666")
         preview_text = ""
         if row.is_result_collapsed:
             if has_error:
@@ -134,15 +134,21 @@ def render_tui_row(row: TuiRow) -> RenderableType:
                 preview_text = row.tool_result_preview
             elif row.tool_result:
                 preview_text = row.tool_result
+        body = Text()
         if preview_text:
-            title.append(f"  {_inline_preview(preview_text, 80)}", style="dim")
-        return title
+            body.append(_inline_preview(preview_text, 110), style="#999999")
+            if has_result:
+                body.append("\nclick row to expand or collapse", style="dim #555555")
+        elif is_running:
+            body.append("waiting for result", style="italic #666666")
+        return Group(title, body) if body.plain else title
 
     if row.kind == "user_tool_result":
         has_error = "<tool_use_error>" in row.tool_result
         is_running = not row.tool_result
         is_expanded = bool(row.tool_result and not row.is_result_collapsed)
         title = Text()
+        title.append("result ", style="bold #666666")
         title.append("↳ ", style=TOOL_COLORS.get(row.tool_name, "bold #ffaa00"))
         title.append(row.tool_name, style=TOOL_COLORS.get(row.tool_name, "bold #ffaa00"))
         state_label = (
@@ -157,28 +163,33 @@ def render_tui_row(row: TuiRow) -> RenderableType:
         title.append(state_label, style="dim")
         if row.tool_args:
             args = ", ".join(f"{k}={repr(v)[:40]}" for k, v in row.tool_args.items())
-            title.append(f"  {args}", style="dim")
+            title.append(f"  {args}", style="#666666")
 
         body = Text()
         if has_error:
             error_text = _clean_tool_use_error(row.tool_result)
-            body.append(error_text or "tool error", style="bold red")
+            body.append(error_text or "tool error", style="bold #ff6666")
         elif is_running:
-            body.append("waiting for result", style="dim")
+            body.append("waiting for result", style="italic #666666")
         elif row.tool_result and not row.is_result_collapsed:
-            body.append("\n".join(row.tool_result.split("\n")[:20]), style=TEXT_DIM_STYLE)
+            lines = row.tool_result.split("\n")[:20]
+            formatted = "\n".join(f"  {line}" if line else "" for line in lines)
+            body.append(formatted, style="#cccccc")
         elif row.tool_result_preview:
-            body.append(_inline_preview(row.tool_result_preview, 120), style="dim")
+            body.append(_inline_preview(row.tool_result_preview, 120), style="#999999")
+            body.append("\nclick row to expand or collapse", style="dim #555555")
         elif row.tool_result:
-            body.append("result available", style="dim")
+            body.append("result available", style="#666666")
         return Group(title, body)
 
     if row.kind == "assistant_text":
         if not row.text.strip():
             return Text("")
-        text = Text()
-        _append_wrapped_lines(text, row.text, first_prefix="", rest_prefix="", style=TEXT_DIM_STYLE)
-        return text
+        from rich.markdown import Markdown
+        return Group(
+            Text("assistant\n", style="bold #e0e0e0"),
+            Markdown(row.text, code_theme="monokai"),
+        )
 
     return Text(row.text)
 
@@ -243,6 +254,57 @@ class TuiMessageRowWidget(Static):
     TuiMessageRowWidget {
         height: auto;
         width: 100%;
+        margin: 0 0 1 0;
+        padding: 0 1;
+        background: #000000;
+        border-left: solid #222222;
+    }
+
+    TuiMessageRowWidget.kind-system_info {
+        background: #000000;
+        border-left: solid #333333;
+        color: #999999;
+    }
+
+    TuiMessageRowWidget.kind-system_error {
+        background: #1a0000;
+        border-left: solid #cc2222;
+        color: #ffaaaa;
+    }
+
+    TuiMessageRowWidget.kind-user_input {
+        background: #000000;
+        border-left: solid #228833;
+        color: #cccccc;
+        padding: 1;
+    }
+
+    TuiMessageRowWidget.kind-assistant_text {
+        background: #0a0a0a;
+        border-left: solid #333333;
+        color: #cccccc;
+        padding: 1;
+    }
+
+    TuiMessageRowWidget.kind-assistant_thinking {
+        background: #000000;
+        border-left: solid #333333;
+        color: #999999;
+        padding: 1;
+    }
+
+    TuiMessageRowWidget.kind-assistant_tool_use {
+        background: #0a0a0a;
+        border-left: solid #444444;
+        color: #cccccc;
+        padding: 1;
+    }
+
+    TuiMessageRowWidget.kind-user_tool_result {
+        background: #000000;
+        border-left: solid #333333;
+        color: #cccccc;
+        padding: 0 1 1 2;
     }
     """
 
@@ -258,10 +320,24 @@ class TuiMessageRowWidget(Static):
         if row == self._row:
             return
         self._row = row
+        self._sync_kind_classes()
         self.update(render_tui_row(row))
 
     def on_mount(self) -> None:
+        self._sync_kind_classes()
         self.update(render_tui_row(self._row))
+
+    def _sync_kind_classes(self) -> None:
+        for kind in (
+            "system_info",
+            "system_error",
+            "user_input",
+            "assistant_text",
+            "assistant_thinking",
+            "assistant_tool_use",
+            "user_tool_result",
+        ):
+            self.set_class(self._row.kind == kind, f"kind-{kind}")
 
     def on_click(self) -> None:
         parent = self.parent
@@ -280,10 +356,10 @@ class TuiMessageRowWidget(Static):
         if text and copy_to_clipboard(text):
             self.styles.animate(
                 "background",
-                "#1a3040",
+                "#222222",
                 duration=0.15,
                 on_complete=lambda: self.styles.animate(
-                    "background", "#0d1117", duration=0.4
+                    "background", "#000000", duration=0.4
                 ),
             )
 
@@ -296,16 +372,30 @@ class TuiTurnWidget(Vertical):
         height: auto;
         width: 100%;
         margin: 0 0 1 0;
+        padding: 1;
+        background: #000000;
+        border: round #222222;
     }
 
     TuiTurnWidget > #turn-header {
         height: auto;
         width: 100%;
+        margin: 0 0 1 0;
+        color: #666666;
     }
 
     TuiTurnWidget > #turn-rows {
         height: auto;
         width: 100%;
+    }
+
+    TuiTurnWidget.turn-system {
+        background: #000000;
+        border: round #222222;
+    }
+
+    TuiTurnWidget.turn-streaming {
+        border: round #333333;
     }
     """
 
@@ -334,10 +424,10 @@ class TuiTurnWidget(Vertical):
         if text and copy_to_clipboard(text):
             self.styles.animate(
                 "background",
-                "#1a3040",
+                "#222222",
                 duration=0.15,
                 on_complete=lambda: self.styles.animate(
-                    "background", "#0d1117", duration=0.4
+                    "background", "#000000", duration=0.4
                 ),
             )
 
@@ -371,13 +461,24 @@ class TuiTurnWidget(Vertical):
         self._hide_past_thinking = hide_past_thinking
         self._last_visible_thinking_row_id = last_visible_thinking_row_id
         header = self.query_one("#turn-header", Static)
-        title = "System" if turn.turn_id == 0 else f"Turn {turn.turn_id}"
+        self.set_class(turn.turn_id == 0, "turn-system")
+        self.set_class(turn.status == "streaming", "turn-streaming")
+        title = "Session" if turn.turn_id == 0 else f"Turn {turn.turn_id:02d}"
+        row_count = len(build_tui_rows_for_turn(
+            turn,
+            hide_past_thinking=hide_past_thinking,
+            last_visible_thinking_row_id=last_visible_thinking_row_id,
+        ))
         header_text = Text()
-        header_text.append(f"{title}", style="bold")
+        header_text.append(f"{title}", style="bold #e0e0e0")
         if turn.status == "streaming":
-            header_text.append("  streaming", style="dim")
-        header_text.append("\n")
-        header_text.append("─" * 56 + "\n", style="dim")
+            header_text.append("  live", style="bold #ffffff on #4488ff")
+        elif turn.turn_id != 0:
+            header_text.append("  complete", style="dim #666666")
+        header_text.append(f"  {row_count} rows", style="dim #666666")
+        if turn.user_input:
+            header_text.append("  ")
+            header_text.append(_row_excerpt(turn.user_input), style="#999999")
         if header_text != self._header_text:
             self._header_text = header_text
             header.update(header_text)
@@ -398,13 +499,12 @@ class TuiTurnWidget(Vertical):
                 if widget_id not in desired_ids:
                     await widget.remove()
             for row in desired_rows:
-                w = existing_widgets.get(row.row_id)
-                if w is None:
-                    w = TuiMessageRowWidget(row, id=row.row_id)
-                    existing_widgets[row.row_id] = w
-                    await rows_container.mount(w)
+                widget = existing_widgets.get(row.row_id)
+                if widget is None:
+                    widget = TuiMessageRowWidget(row, id=row.row_id)
+                    await rows_container.mount(widget)
                 else:
-                    w.set_row(row)
+                    widget.set_row(row)
 
     def compose(self):
         yield Static("", id="turn-header")

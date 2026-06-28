@@ -14,7 +14,10 @@ from voice_code.session import (
     list_sessions,
 )
 
-COMMON_HELP = "/help /sessions /resume <id> /quit"
+COMMON_HELP = (
+    "/help /sessions /resume <id> /tasks /task <id> /task-close "
+    "/task-stop <id> /task-stop-all /task-copy /task-path /quit"
+)
 TUI_EXTRA_HELP = " /clear /tools /perm /detail [n] /collapse /copy /copylast"
 
 
@@ -32,6 +35,13 @@ class ParsedCommand:
         "quit",
         "sessions",
         "resume",
+        "tasks",
+        "task",
+        "task_close",
+        "task_stop",
+        "task_stop_all",
+        "task_copy",
+        "task_path",
         "clear",
         "copy",
         "copylast",
@@ -83,6 +93,28 @@ def parse_command(text: str) -> ParsedCommand:
             raw=text,
             args={"session_id": parts[1] if len(parts) > 1 else ""},
         )
+    if cmd == "/tasks":
+        return ParsedCommand(name="tasks", raw=text)
+    if cmd == "/task":
+        return ParsedCommand(
+            name="task",
+            raw=text,
+            args={"task_id": parts[1] if len(parts) > 1 else ""},
+        )
+    if cmd == "/task-close":
+        return ParsedCommand(name="task_close", raw=text)
+    if cmd == "/task-stop":
+        return ParsedCommand(
+            name="task_stop",
+            raw=text,
+            args={"task_id": parts[1] if len(parts) > 1 else ""},
+        )
+    if cmd == "/task-stop-all":
+        return ParsedCommand(name="task_stop_all", raw=text)
+    if cmd == "/task-copy":
+        return ParsedCommand(name="task_copy", raw=text)
+    if cmd == "/task-path":
+        return ParsedCommand(name="task_path", raw=text)
     if cmd == "/clear":
         return ParsedCommand(name="clear", raw=text)
     if cmd == "/copy":

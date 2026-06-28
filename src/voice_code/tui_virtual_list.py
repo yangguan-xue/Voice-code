@@ -46,10 +46,10 @@ class TurnWidget(Static):
     def _flash_selected(self) -> None:
         self.styles.animate(
             "background",
-            "#1a3040",
+            "#222222",
             duration=0.15,
             on_complete=lambda: self.styles.animate(
-                "background", "#0d1117", duration=0.4
+                "background", "#000000", duration=0.4
             ),
         )
 
@@ -59,13 +59,13 @@ class MessagesView(VerticalScroll):
 
     DEFAULT_CSS = """
     MessagesView {
-        background: #0d1117;
-        color: #e0e0e0;
+        background: #000000;
+        color: #cccccc;
         padding: 0 2;
     }
     #virtual-history {
-        background: #0d1117;
-        color: #e0e0e0;
+        background: #000000;
+        color: #cccccc;
         width: 100%;
     }
     """
