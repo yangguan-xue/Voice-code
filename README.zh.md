@@ -54,7 +54,8 @@ pip install voice-code
 cp .env.example .env   # 设置你的 LLM_API_KEY
 
 # 运行
-reasoning               # CLI 模式
+reasoning               # TUI 模式（默认）
+reasoning --plain       # CLI REPL 模式
 reasoning-voice         # 语音模式（实验性）
 ```
 
@@ -84,9 +85,10 @@ api_key_env = "OPENAI_API_KEY"
 ### 🎮 CLI 命令
 
 ```bash
-reasoning                         # 交互式 REPL
-reasoning --profile deepseek      # 指定模型
-reasoning --permission-mode bypass # 跳过确认
+reasoning                         # TUI 模式（默认）
+reasoning --plain                  # CLI REPL 模式
+reasoning --profile deepseek       # 指定模型
+reasoning --permission-mode bypass  # 跳过确认
 ```
 
 #### REPL 命令
