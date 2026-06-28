@@ -61,6 +61,10 @@ testpaths = ["tests"]
 [tool.mypy]
 python_version = "3.12"
 ignore_missing_imports = true
+check_untyped_defs = false
+disallow_any_generics = false
+warn_return_any = false
+warn_unused_configs = false
 
 [dependency-groups]
 dev = [
