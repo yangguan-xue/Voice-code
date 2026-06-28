@@ -10,7 +10,7 @@
 </h1>
 
 <p align="center">
-  <b>语音驱动的编程助手，会听会说</b>
+  <b>语音驱动的编程助手，会听会说还会做</b>
   <br>
   <i>An interactive coding agent with voice mode</i>
 </p>
