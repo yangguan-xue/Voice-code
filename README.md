@@ -5,7 +5,7 @@ Python-powered interactive coding agent with voice mode. A LangChain-based rewri
 ## Quick Start
 
 ```bash
-pip install reasoning-agent
+pip install code-pro
 # or: uv sync
 
 cp .env.example .env  # set LLM_API_KEY
