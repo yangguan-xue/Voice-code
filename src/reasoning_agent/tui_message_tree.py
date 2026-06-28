@@ -1,6 +1,6 @@
 """TUI message tree primitives.
 
-This module defines a cc-haha-like message-row model that is independent from
+This module defines a message-row model that is independent from
 the current Textual screen implementation. It is the first step toward
 replacing the turn-level TUI with a message-level tree.
 """

@@ -1,4 +1,4 @@
-"""Compact prompt 模板 — 参考 cc-haha prompts.ts"""
+"""Compact prompt templates."""
 
 from __future__ import annotations
 

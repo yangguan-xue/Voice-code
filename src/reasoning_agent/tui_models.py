@@ -1,6 +1,6 @@
 """Structured TUI message models.
 
-These classes are the Textual-side equivalent of cc-haha's normalized
+These classes are the Textual-side equivalent of the normalized
 message layer: the screen owns a list of turn/message records, while renderers
 decide how each entry appears.
 """

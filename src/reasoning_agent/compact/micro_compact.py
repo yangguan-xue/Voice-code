@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 _KEEP_RECENT = 12
 _CLEARED_TEXT = "[Old tool output cleared]"
 
-# 可被清除的工具结果类型（cc-haha 模式）
+    # Tool result types eligible for clearing
 _CLEARABLE_TOOLS = frozenset({
     "read", "glob", "grep", "bash",
     "edit", "write",
@@ -31,7 +31,7 @@ def apply_micro_compact(
 ) -> tuple[list[BaseMessage], int]:
     """清除旧的工具结果，保留最近 keep_recent 个。
 
-    参考 cc-haha: 找到所有 ToolMessage，保留最后 N 个，其余内容替换为占位文本。
+    Find all ToolMessages, keep last N, replace others with placeholder text.
     只处理最后一条用户消息之前的工具结果。
     """
     # 找到最后一条 HumanMessage 的位置

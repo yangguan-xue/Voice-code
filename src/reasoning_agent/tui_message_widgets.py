@@ -1,4 +1,4 @@
-"""Textual widgets for the cc-haha-like TUI message tree."""
+"""Textual widgets for the TUI message tree."""
 
 from __future__ import annotations
 

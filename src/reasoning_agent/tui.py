@@ -1,4 +1,4 @@
-"""Textual TUI — transcript-style chat layout closer to cc-haha."""
+"""Textual TUI — transcript-style chat layout."""
 
 from __future__ import annotations
 
