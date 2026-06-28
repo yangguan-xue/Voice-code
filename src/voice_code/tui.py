@@ -369,10 +369,10 @@ class AgentScreen(Screen):
                 )
 
                 desired_ids: list[str] = []
-                existing_widgets = {
-                    widget.id: widget for widget in container.query(TurnWidget)
+                existing_widgets: dict[str, TurnWidget] = {
+                    str(widget.id): widget for widget in container.query(TurnWidget)
+                    if widget.id is not None
                 }
-
                 if not existing_widgets and turns:
                     await container.remove_children()
 

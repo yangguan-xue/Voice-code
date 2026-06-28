@@ -57,12 +57,11 @@ class TuiEntry:
 class _TurnLike(Protocol):
     turn_id: int
     user_input: str
-    entries: Sequence[TuiEntry]
+    entries: list[TuiEntry]
     status: str
 
 
-class _MutableTurnLike(_TurnLike, Protocol):
-    entries: list[TuiEntry]
+_MutableTurnLike = _TurnLike
 
 
 def _find_trailing_entry_index(

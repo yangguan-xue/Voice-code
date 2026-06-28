@@ -398,12 +398,13 @@ class TuiTurnWidget(Vertical):
                 if widget_id not in desired_ids:
                     await widget.remove()
             for row in desired_rows:
-                widget = existing_widgets.get(row.row_id)
-                if widget is None:
-                    widget = TuiMessageRowWidget(row, id=row.row_id)
-                    await rows_container.mount(widget)
+                w = existing_widgets.get(row.row_id)
+                if w is None:
+                    w = TuiMessageRowWidget(row, id=row.row_id)
+                    existing_widgets[row.row_id] = w
+                    await rows_container.mount(w)
                 else:
-                    widget.set_row(row)
+                    w.set_row(row)
 
     def compose(self):
         yield Static("", id="turn-header")

@@ -113,15 +113,15 @@ class _VerboseTtsMixin:
         inference_timesteps: int | None = None,
     ) -> bytes:
         print(f"\n  🔊 播报: {text[:120]}{'...' if len(text) > 120 else ''}")
-        return await super().synthesize_text(
+        return await super().synthesize_text(  # type: ignore[misc]
             text,
             seed=seed,
             cfg_value=cfg_value,
             inference_timesteps=inference_timesteps,
-        )  # type: ignore[misc]
+        )
 
 
-class _VerboseTtsClient(_VerboseTtsMixin, VoxcTtsClient):
+class _VerboseTtsClient(_VerboseTtsMixin, VoxcTtsClient):  # type: ignore[misc]
     """远端自建 TTS 包装器 — VoxCPM2。"""
     pass
 
@@ -158,13 +158,13 @@ async def run(args: argparse.Namespace) -> None:
 
     if use_stepfun:
         stt_client: SupportsSttClient = StepFunASRClient(api_key=stepfun_key)
-        tts_client: SupportsTtsClient = _VerboseStepFunTtsClient(
+        tts_client: SupportsTtsClient = _VerboseStepFunTtsClient(  # type: ignore[assignment]
             api_key=stepfun_key,
             voice=args.stepfun_voice,
         )
     else:
         stt_client = SttClient(base_url=f"{args.stt_url}/transcribe")
-        tts_client = _VerboseTtsClient(base_url=f"{args.tts_url}/tts")
+        tts_client = _VerboseTtsClient(base_url=f"{args.tts_url}/tts")  # type: ignore[assignment]
 
     # Check services
     stt_ok = await stt_client.health_check()

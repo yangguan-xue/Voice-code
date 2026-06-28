@@ -497,6 +497,7 @@ class VoiceOrchestrator:
                 if prev_state != VoiceState.SPEAKING:
                     await self._enter_speaking()
                 self._timing.start_stage()
+                assert self._loop is not None
                 await self._loop.run_in_executor(None, self._player.play_wav_bytes, audio)
                 self._timing.end_playback()
                 if prev_state != VoiceState.SPEAKING:
@@ -511,7 +512,7 @@ class VoiceOrchestrator:
                 await self._enter_speaking()
 
             first = True
-            async for chunk, sr in stream:
+            async for chunk, sr in stream:  # type: ignore[attr-defined]
                 if first:
                     self._timing.end_tts(0)
                     self._timing.start_stage()

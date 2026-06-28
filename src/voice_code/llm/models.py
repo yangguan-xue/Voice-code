@@ -147,13 +147,13 @@ def init_model(
         or env_values.get("LLM_MODEL_NAME")
         or "deepseek-v4-pro"
     )
-    _max_tokens = max_tokens or profile_values.get("max_tokens")
+    _max_tokens: int | None = max_tokens or profile_values.get("max_tokens")  # type: ignore[assignment]
 
     return ChatOpenAI(
-        model=_model_name,
-        base_url=_base_url,
+        model=str(_model_name),
+        base_url=str(_base_url),
         api_key=_api_key,  # type: ignore[arg-type]
         temperature=temperature,
         timeout=timeout,
-        max_tokens=_max_tokens,  # type: ignore[arg-type]
+        max_tokens=_max_tokens,  # type: ignore[call-arg]
     )
