@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from reasoning_agent.context import get_context, get_git_status, load_claude_md
+from voice_code.context import get_context, get_git_status, load_claude_md
 
 
 # ============================================================

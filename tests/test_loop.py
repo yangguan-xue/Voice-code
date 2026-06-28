@@ -12,10 +12,10 @@ import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage
 from langchain_core.tools import tool
 
-from reasoning_agent.agent.abort import AbortSignal
-from reasoning_agent.agent.loop import agent_loop
-from reasoning_agent.agent.types import AgentEvent, EventType
-from reasoning_agent.permissions import PermissionContext
+from voice_code.agent.abort import AbortSignal
+from voice_code.agent.loop import agent_loop
+from voice_code.agent.types import AgentEvent, EventType
+from voice_code.permissions import PermissionContext
 
 
 def _make_chunks(
@@ -462,7 +462,7 @@ async def test_context_overflow_triggers_compact_and_retry(monkeypatch: pytest.M
     async def fake_compact(messages: list[object], model_obj: object) -> list[object]:
         return messages[:-1]
 
-    monkeypatch.setattr("reasoning_agent.agent.loop.try_reactive_compact", fake_compact)
+    monkeypatch.setattr("voice_code.agent.loop.try_reactive_compact", fake_compact)
 
     events = await _async_collect(
         agent_loop(
@@ -491,7 +491,7 @@ async def test_context_overflow_twice_gives_up(monkeypatch: pytest.MonkeyPatch):
     async def fake_compact(messages: list[object], model_obj: object) -> list[object]:
         return messages[:-1]
 
-    monkeypatch.setattr("reasoning_agent.agent.loop.try_reactive_compact", fake_compact)
+    monkeypatch.setattr("voice_code.agent.loop.try_reactive_compact", fake_compact)
 
     events = await _async_collect(
         agent_loop(

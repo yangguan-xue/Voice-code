@@ -5,8 +5,8 @@ from __future__ import annotations
 from rich.panel import Panel
 from rich.text import Text
 
-from reasoning_agent.tui_message_components import Message, Messages
-from reasoning_agent.tui_models import TurnBlock, TurnEntry
+from voice_code.tui_message_components import Message, Messages
+from voice_code.tui_models import TurnBlock, TurnEntry
 
 
 def test_message_routes_entries_to_specialized_renderers():

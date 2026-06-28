@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from reasoning_agent.agent.types import AgentEvent, EventType
-from reasoning_agent.tui_query_events import (
+from voice_code.agent.types import AgentEvent, EventType
+from voice_code.tui_query_events import (
     apply_nonstream_event,
     apply_reasoning_event,
     apply_text_event,
     commit_streaming_buffer,
     extract_think_text,
 )
-from reasoning_agent.tui_runtime import QueryRuntimeState
+from voice_code.tui_runtime import QueryRuntimeState
 
 
 def test_extract_think_text_splits_visible_and_thinking_content():

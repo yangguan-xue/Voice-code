@@ -132,7 +132,7 @@ reasoning-voice --debug           # 调试日志
 ### 🏗️ 架构
 
 ```
-src/reasoning_agent/
+src/voice_code/
 ├── cli.py / voice_cli.py / tui.py   # 入口
 ├── agent/loop.py                     # 查询循环
 ├── tools/                            # 工具实现

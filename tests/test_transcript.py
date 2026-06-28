@@ -7,12 +7,12 @@ from pathlib import Path
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
-from reasoning_agent.session.manager import get_session_path, list_sessions, make_session_id
-from reasoning_agent.session.transcript import TranscriptReader, TranscriptWriter
+from voice_code.session.manager import get_session_path, list_sessions, make_session_id
+from voice_code.session.transcript import TranscriptReader, TranscriptWriter
 
 
 def test_transcript_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr("reasoning_agent.session.manager.get_transcript_dir", lambda: tmp_path)
+    monkeypatch.setattr("voice_code.session.manager.get_transcript_dir", lambda: tmp_path)
     session_id = make_session_id()
     path = get_session_path(session_id)
     writer = TranscriptWriter(path)
@@ -66,7 +66,7 @@ def test_transcript_writer_can_read_all_messages(tmp_path: Path):
 
 
 def test_list_sessions_returns_recent_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr("reasoning_agent.session.manager.get_transcript_dir", lambda: tmp_path)
+    monkeypatch.setattr("voice_code.session.manager.get_transcript_dir", lambda: tmp_path)
 
     path1 = get_session_path("20260101-000000-abcd")
     writer1 = TranscriptWriter(path1)

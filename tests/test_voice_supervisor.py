@@ -8,9 +8,9 @@ import pytest
 from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 
-from reasoning_agent.voice.command_assistant import CommandAssistant
-from reasoning_agent.voice.orchestrator import VoiceOrchestrator
-from reasoning_agent.voice.types import (
+from voice_code.voice.command_assistant import CommandAssistant
+from voice_code.voice.orchestrator import VoiceOrchestrator
+from voice_code.voice.types import (
     SUPERVISOR_FAILED_TEXT,
     CommandDecision,
     CommandKind,

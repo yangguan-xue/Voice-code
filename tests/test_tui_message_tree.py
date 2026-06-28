@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from reasoning_agent.tui import TurnBlock, TurnEntry
-from reasoning_agent.tui_message_tree import (
+from voice_code.tui import TurnBlock, TurnEntry
+from voice_code.tui_message_tree import (
     build_tui_rows_for_turn,
     set_turn_streaming_text,
     set_latest_bash_result_expanded,

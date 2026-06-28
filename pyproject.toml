@@ -36,7 +36,7 @@ build-backend = "hatchling.build"
 exclude = ["tools/"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/reasoning_agent"]
+packages = ["src/voice_code"]
 
 [dependency-groups]
 dev = [
@@ -47,8 +47,8 @@ dev = [
 ]
 
 [project.scripts]
-reasoning = "reasoning_agent.cli:main"
-reasoning-voice = "reasoning_agent.voice_cli:main"
+reasoning = "voice_code.cli:main"
+reasoning-voice = "voice_code.voice_cli:main"
 # Legacy direct TUI entry; keep for compatibility while `reasoning` becomes
 # the single user-facing CLI entry point.
-reasoning-tui = "reasoning_agent.tui:main"
+reasoning-tui = "voice_code.tui:main"

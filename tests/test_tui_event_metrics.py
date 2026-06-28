@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from reasoning_agent.agent.types import AgentEvent, EventType
-from reasoning_agent.tui import AgentScreen
-from reasoning_agent.tui_runtime import QueryRuntimeState, build_runtime_display, phase_label
+from voice_code.agent.types import AgentEvent, EventType
+from voice_code.tui import AgentScreen
+from voice_code.tui_runtime import QueryRuntimeState, build_runtime_display, phase_label
 
 
 def test_apply_error_event_metrics_prefers_status_and_ignores_generic_error():

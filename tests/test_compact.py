@@ -6,13 +6,13 @@ from types import SimpleNamespace
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
-from reasoning_agent.compact.boundary import make_compact_boundary
-from reasoning_agent.compact.context_collapse import collapse_old_turns
-from reasoning_agent.compact.micro_compact import apply_micro_compact
-from reasoning_agent.compact.prompt import format_compact_summary, get_compact_prompt
-from reasoning_agent.compact.reactive_compact import is_context_overflow_error
-from reasoning_agent.compact.snip import snip_compact
-from reasoning_agent.compact.token_count import rough_token_count_for_messages
+from voice_code.compact.boundary import make_compact_boundary
+from voice_code.compact.context_collapse import collapse_old_turns
+from voice_code.compact.micro_compact import apply_micro_compact
+from voice_code.compact.prompt import format_compact_summary, get_compact_prompt
+from voice_code.compact.reactive_compact import is_context_overflow_error
+from voice_code.compact.snip import snip_compact
+from voice_code.compact.token_count import rough_token_count_for_messages
 
 
 def test_rough_token_count():

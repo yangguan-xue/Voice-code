@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-import reasoning_agent.llm.models as models
+import voice_code.llm.models as models
 
 
 class DummyChatOpenAI:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from langchain_core.tools import tool
 
-from reasoning_agent.prompts import get_system_prompt
+from voice_code.prompts import get_system_prompt
 
 
 def test_basic_structure():

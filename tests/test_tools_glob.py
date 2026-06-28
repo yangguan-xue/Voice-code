@@ -5,7 +5,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from reasoning_agent.tools.glob_search import glob
+from voice_code.tools.glob_search import glob
 
 
 def test_glob_find_files():

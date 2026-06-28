@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from reasoning_agent.permissions import PermissionBehavior, PermissionDecision, can_use_tool
-from reasoning_agent.tui_permission_dialog import PendingPermissionRequest
-from reasoning_agent.tui_permissions import make_tui_permission_context
+from voice_code.permissions import PermissionBehavior, PermissionDecision, can_use_tool
+from voice_code.tui_permission_dialog import PendingPermissionRequest
+from voice_code.tui_permissions import make_tui_permission_context
 
 
 def test_tui_permission_context_allows_non_destructive_ask_requests():

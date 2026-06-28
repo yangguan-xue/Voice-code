@@ -5,8 +5,8 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from reasoning_agent.tools.cache import mark_as_read
-from reasoning_agent.tools.file_write import write
+from voice_code.tools.cache import mark_as_read
+from voice_code.tools.file_write import write
 
 
 def test_write_new_file():

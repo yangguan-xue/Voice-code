@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from reasoning_agent.permissions import (
+from voice_code.permissions import (
     PermissionApprover,
     PermissionBehavior,
     PermissionContext,
@@ -27,7 +27,7 @@ class FixedApprover:
 
     def approve(self, request):
         self.requests.append(request)
-        from reasoning_agent.permissions import PermissionDecision
+        from voice_code.permissions import PermissionDecision
 
         return PermissionDecision(behavior=self.behavior, message=self.message)
 

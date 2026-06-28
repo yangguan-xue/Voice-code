@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from reasoning_agent.tools.grep_search import grep
+from voice_code.tools.grep_search import grep
 
 _has_rg = shutil.which("rg") is not None
 

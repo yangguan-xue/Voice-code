@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from reasoning_agent.tools.bash import bash
+from voice_code.tools.bash import bash
 
 
 def test_bash_simple():

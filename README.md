@@ -133,7 +133,7 @@ reasoning-voice --debug           # verbose logging
 ### 🏗️ Architecture
 
 ```
-src/reasoning_agent/
+src/voice_code/
 ├── cli.py / voice_cli.py / tui.py   # Entry points
 ├── agent/loop.py                     # Query loop
 ├── tools/                            # Tool implementations

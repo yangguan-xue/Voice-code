@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 from textual.app import App
 
-from reasoning_agent.tui import TurnBlock, TurnEntry
-from reasoning_agent.tui_message_widgets import TuiMessageRowWidget, TuiTurnWidget
+from voice_code.tui import TurnBlock, TurnEntry
+from voice_code.tui_message_widgets import TuiMessageRowWidget, TuiTurnWidget
 
 
 class _TurnProbeApp(App[None]):

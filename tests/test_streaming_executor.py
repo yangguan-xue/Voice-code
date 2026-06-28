@@ -7,8 +7,8 @@ import time
 import pytest
 from langchain_core.tools import tool
 
-from reasoning_agent.agent.types import EventType
-from reasoning_agent.tools.streaming_executor import AbortReason, StreamingToolExecutor
+from voice_code.agent.types import EventType
+from voice_code.tools.streaming_executor import AbortReason, StreamingToolExecutor
 
 
 @pytest.mark.asyncio
