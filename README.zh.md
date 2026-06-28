@@ -154,6 +154,12 @@ mypy src/
 pytest tests/ -v
 ```
 
+### ⚠️ 安全提醒
+
+Voice Code 会在你的机器上执行 LLM 生成的代码。权限系统会对危险操作要求确认。`--permission-mode bypass` 会跳过所有检查，仅在可信环境使用。
+
+详见 [SECURITY.md](SECURITY.md)。
+
 ### 📄 许可证
 
 AGPL-3.0 — 详见 [LICENSE](LICENSE)

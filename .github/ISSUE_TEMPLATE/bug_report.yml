@@ -1,0 +1,18 @@
+name: Bug Report
+description: Report a bug
+labels: ["bug"]
+body:
+  - type: textarea
+    attributes:
+      label: Description
+      description: What happened?
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Steps to Reproduce
+      description: How to reproduce the issue
+  - type: textarea
+    attributes:
+      label: Environment
+      description: OS, Python version, model used

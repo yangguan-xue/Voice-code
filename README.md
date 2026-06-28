@@ -160,6 +160,12 @@ mypy src/
 pytest tests/ -v
 ```
 
+### ⚠️ Security
+
+Voice Code executes LLM-generated code on your machine. The permission system requires confirmation for dangerous operations. `--permission-mode bypass` disables all checks — only use in trusted environments.
+
+See [SECURITY.md](SECURITY.md) for details.
+
 ### 📄 License
 
 AGPL-3.0 — see [LICENSE](LICENSE)
