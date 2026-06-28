@@ -7,7 +7,7 @@
 </p>
 
 <h1 align="center">
-  ⚡ Voice Code
+  ⚡ Voice Code · 语码
 </h1>
 
 <p align="center">
@@ -30,7 +30,7 @@
 
 ## 🇬🇧 English
 
-Voice Code is an interactive coding agent powered by LLM. It runs in your terminal, executes tools on your behalf, and supports speech-driven interaction via voice mode.
+Voice Code (语码) is an interactive coding agent powered by LLM. It runs in your terminal, executes tools on your behalf, and supports speech-driven interaction via voice mode.
 
 ### ✨ Features
 
@@ -48,7 +48,7 @@ Voice Code is an interactive coding agent powered by LLM. It runs in your termin
 
 ```bash
 # install
-pip install code-pal
+pip install voice-code
 # or: uv sync
 
 # configure
