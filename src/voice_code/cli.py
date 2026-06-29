@@ -20,6 +20,7 @@ from voice_code.commands import (
     resume_session,
 )
 from voice_code.llm.models import list_model_profiles
+from voice_code.memory.service import MemoryService
 from voice_code.permissions import PermissionContext
 from voice_code.runtime import bootstrap_runtime
 from voice_code.tui import main as tui_main
@@ -105,6 +106,7 @@ async def run_repl(args: argparse.Namespace) -> None:
     prompt = runtime.prompt
     perm_ctx = PermissionContext(mode=args.permission_mode)
     abort_sig = AbortSignal()
+    memory_service = MemoryService(project_root=cwd)
     resume_messages: list[BaseMessage] | None = None
     current_session_id = runtime.session_id
     transcript_writer = runtime.transcript_writer
@@ -171,6 +173,7 @@ async def run_repl(args: argparse.Namespace) -> None:
                 continue
 
         abort_sig.clear()
+        memory_msgs = memory_service.get_memory_messages(query=user_input, limit=5)
         async for event in agent_loop(
             user_input=user_input,
             tools=tools,
@@ -181,6 +184,7 @@ async def run_repl(args: argparse.Namespace) -> None:
             resume_messages=resume_messages,
             transcript_writer=transcript_writer,
             fallback_model=fallback_model,
+            memory_messages=memory_msgs,
         ):
             _display_event(event)
         resume_messages = transcript_writer.read_all_messages()

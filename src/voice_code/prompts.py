@@ -248,6 +248,7 @@ def get_system_prompt(
     claude_md: str = "",
     git_status: str = "",
     language: str = "",
+    memory_content: str = "",
 ) -> str:
     """组装完整系统提示词。
 
@@ -258,6 +259,7 @@ def get_system_prompt(
         claude_md: CLAUDE.md 内容。
         git_status: git 状态摘要。
         language: 回复语言偏好 (e.g. "Chinese")。
+        memory_content: 记忆系统指令与内容。
 
     Returns:
         完整的系统提示词字符串。
@@ -289,5 +291,8 @@ def get_system_prompt(
     git_section = _section_git_status(git_status)
     if git_section:
         sections.append(git_section)
+
+    if memory_content:
+        sections.append(memory_content)
 
     return "\n\n".join(sections)

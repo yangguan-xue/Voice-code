@@ -40,14 +40,11 @@ from voice_code.commands import (
     resume_session,
 )
 from voice_code.llm.models import list_model_profiles
+from voice_code.memory.service import MemoryService
 from voice_code.permissions import PermissionBehavior, PermissionDecision
 from voice_code.runtime import bootstrap_runtime
 from voice_code.session import TranscriptWriter
 from voice_code.subagents.service import SubagentService, get_or_create_service
-from voice_code.theme import (
-    BG_SECONDARY,
-    BORDER_PRIMARY,
-)
 from voice_code.transcript_view import (
     PlainTurn,
     last_assistant_text,
@@ -75,6 +72,14 @@ from voice_code.tui_query_events import (
     apply_reasoning_event,
     apply_text_event,
     commit_streaming_buffer,
+)
+from voice_code.theme import (
+    BG_PRIMARY,
+    BG_SECONDARY,
+    BORDER_PRIMARY,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
+    TEXT_DIM,
 )
 from voice_code.tui_runtime import (
     QueryRuntimeState,
@@ -119,6 +124,7 @@ def _stream_turn_events_sync(
     transcript_writer: TranscriptWriter | None,
     abort_signal: AbortSignal | None,
     event_queue: queue.Queue[AgentEvent | Exception | None],
+    memory_messages: list[HumanMessage] | None = None,
 ) -> None:
     async def _run() -> None:
         async for event in agent_loop(
@@ -131,6 +137,7 @@ def _stream_turn_events_sync(
             resume_messages=resume_messages,
             transcript_writer=transcript_writer,
             fallback_model=fallback_model,
+            memory_messages=memory_messages,
         ):
             event_queue.put(event)
 
@@ -321,6 +328,7 @@ class AgentScreen(Screen):
             self._prompt = runtime.prompt
             self._session_id = runtime.session_id
             self._transcript_writer = runtime.transcript_writer
+            self._memory_service = MemoryService(project_root=runtime.cwd)
             self._subagent_service = get_or_create_service(
                 self._session_id,
                 event_loop=asyncio.get_running_loop(),
@@ -1035,6 +1043,7 @@ class AgentScreen(Screen):
             model = self._model
             fallback_model = self._fallback_model
             event_queue: queue.Queue[AgentEvent | Exception | None] = queue.Queue()
+            memory_msgs = self._get_memory_messages(text)
             producer = asyncio.create_task(
                 asyncio.to_thread(
                     _stream_turn_events_sync,
@@ -1048,6 +1057,7 @@ class AgentScreen(Screen):
                     self._transcript_writer,
                     self._abort_signal,
                     event_queue,
+                    memory_msgs,
                 )
             )
 
@@ -1209,6 +1219,14 @@ class AgentScreen(Screen):
             thinking_widget.update(Text())
         self._update_statusbar(display.status_phase, display.tool_count)
 
+    # ── Memory ─────────────────────────────────────────────────────────
+
+    def _get_memory_messages(self, query: str) -> list[HumanMessage]:
+        service = getattr(self, "_memory_service", None)
+        if service is None:
+            return []
+        return service.get_memory_messages(query=query, limit=5)
+
     # ── Commands ───────────────────────────────────────────────────────
 
     def _handle_command(self, text: str) -> None:
@@ -1336,6 +1354,76 @@ class AgentScreen(Screen):
             self._expand_detail(turn_id)
         elif command.name == "collapse":
             self._collapse_all()
+        elif command.name == "memory":
+            sub = str(command.args.get("subcommand", "list"))
+            arg = str(command.args.get("arg", ""))
+            service = getattr(self, "_memory_service", None)
+            if service is None:
+                self._append_system_error("Memory service not ready.")
+            elif sub == "list":
+                entries = service.list()
+                if not entries:
+                    self._append_system_info("No memories.")
+                else:
+                    for e in entries:
+                        status = " [archived]" if not e.is_active() else ""
+                        self._append_system_info(f"  {e.id}  {e.name}{status}")
+            elif sub == "show":
+                entry = service.get(arg, "user") or service.get(arg, "project")
+                if entry is None:
+                    self._append_system_error(f"Memory not found: {arg}")
+                else:
+                    self._append_system_info(f"ID: {entry.id}")
+                    self._append_system_info(f"Name: {entry.name}")
+                    self._append_system_info(f"Type: {entry.type.value}")
+                    self._append_system_info(f"Scope: {entry.scope.value}")
+                    self._append_system_info(f"Description: {entry.description}")
+            elif sub == "open":
+                from voice_code.memory.service import find_memory_file_path
+                entry_path = find_memory_file_path(arg, getattr(service, "project_root", None))
+                if entry_path:
+                    self._append_system_info(str(entry_path))
+                else:
+                    self._append_system_error(f"Memory file not found: {arg}")
+            elif sub == "reindex":
+                service.reindex()
+                self._append_system_info("Index rebuilt.")
+            elif sub == "audit":
+                issues = service.audit()
+                if not issues:
+                    self._append_system_info("No issues found.")
+                else:
+                    for issue in issues:
+                        self._append_system_info(f"[{issue['type']}] {issue['message']}")
+            else:
+                self._append_system_error(f"Unknown memory subcommand: /memory {sub}")
+        elif command.name == "remember":
+            text = str(command.args.get("text", "")).strip()
+            if not text:
+                self._append_system_error("Usage: /remember <text>")
+            else:
+                service = getattr(self, "_memory_service", None)
+                if service is None:
+                    self._append_system_error("Memory service not ready.")
+                else:
+                    entry = service.remember(text, session_id=self._session_id)
+                    self._append_system_info(f"Saved memory: {entry.id}")
+        elif command.name == "forget":
+            entry_id = str(command.args.get("entry_id", "")).strip()
+            if not entry_id:
+                self._append_system_error("Usage: /forget <id>")
+            else:
+                service = getattr(self, "_memory_service", None)
+                if service is None:
+                    self._append_system_error("Memory service not ready.")
+                else:
+                    archived = service.forget(entry_id, "user")
+                    if not archived:
+                        archived = service.forget(entry_id, "project")
+                    if archived:
+                        self._append_system_info(f"Archived memory: {entry_id}")
+                    else:
+                        self._append_system_error(f"Memory not found: {entry_id}")
         elif command.name == "quit":
             if self._transcript_writer is not None:
                 self._transcript_writer.close()

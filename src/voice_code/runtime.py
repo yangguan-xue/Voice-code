@@ -11,6 +11,9 @@ from langchain_openai import ChatOpenAI
 import voice_code.llm.models as model_config
 from voice_code.context import get_context
 from voice_code.llm.models import init_model
+from voice_code.memory.paths import ensure_memory_dirs
+from voice_code.memory.prompt import build_memory_content
+from voice_code.memory.store import read_memory_md
 from voice_code.prompts import get_system_prompt
 from voice_code.session import TranscriptWriter, get_session_path, make_session_id
 from voice_code.tools import get_all_tools
@@ -45,12 +48,28 @@ async def bootstrap_runtime(
     session_id: str | None = None,
     resume_messages: list[BaseMessage] | None = None,
 ) -> RuntimeBootstrap:
-    model = init_model(profile=profile, model_name=model_name)
+    model_kwargs: dict[str, str] = {}
+    if profile:
+        model_kwargs["profile"] = profile
+    if model_name:
+        model_kwargs["model_name"] = model_name
+
+    model = init_model(**model_kwargs)
     fallback_profile = resolve_fallback_profile(profile)
     fallback_model = init_model(profile=fallback_profile) if fallback_profile else None
 
     tools = get_all_tools()
     cwd = os.getcwd()
+
+    ensure_memory_dirs(cwd)
+
+    user_memory_md = read_memory_md("user")
+    project_memory_md = read_memory_md("project", cwd)
+    memory_content = build_memory_content(
+        user_memory_md=user_memory_md,
+        project_memory_md=project_memory_md,
+    )
+
     ctx = await get_context(cwd)
     prompt = get_system_prompt(
         tools=tools,
@@ -58,6 +77,7 @@ async def bootstrap_runtime(
         model_name=model.model_name,
         claude_md=ctx.get("claudeMd", ""),
         git_status=ctx.get("gitStatus", ""),
+        memory_content=memory_content,
     )
 
     resolved_session_id = session_id or make_session_id()
