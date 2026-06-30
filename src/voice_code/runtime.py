@@ -45,7 +45,13 @@ async def bootstrap_runtime(
     session_id: str | None = None,
     resume_messages: list[BaseMessage] | None = None,
 ) -> RuntimeBootstrap:
-    model = init_model(profile=profile, model_name=model_name)
+    model_kwargs: dict[str, str] = {}
+    if profile:
+        model_kwargs["profile"] = profile
+    if model_name:
+        model_kwargs["model_name"] = model_name
+
+    model = init_model(**model_kwargs)
     fallback_profile = resolve_fallback_profile(profile)
     fallback_model = init_model(profile=fallback_profile) if fallback_profile else None
 

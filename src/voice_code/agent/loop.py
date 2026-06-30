@@ -162,6 +162,7 @@ async def agent_loop(
     transcript_writer: TranscriptWriter | None = None,
     fallback_model: ChatOpenAI | None = None,
     runtime_session_id: str | None = None,
+    memory_messages: list[HumanMessage] | None = None,
 ) -> AsyncGenerator[AgentEvent, None]:
     """执行 Agent 消息循环 (astream 流式)。
 
@@ -201,19 +202,24 @@ async def agent_loop(
         service=service,
     )
     pending_notifications = service.drain_notifications_as_messages()
+    memory_msgs = memory_messages or []
 
     if resume_messages:
         messages = list(resume_messages)
+        messages.extend(memory_msgs)
         messages.extend(pending_notifications)
         messages.append(HumanMessage(content=user_input))
     else:
         messages = [SystemMessage(content=system_prompt)]
+        messages.extend(memory_msgs)
         messages.extend(pending_notifications)
         messages.append(HumanMessage(content=user_input))
         if transcript_writer:
             transcript_writer.write_message(messages[0])
 
     if transcript_writer:
+        for msg in memory_msgs:
+            transcript_writer.write_message(msg)
         for notification in pending_notifications:
             transcript_writer.write_message(notification)
         transcript_writer.write_message(messages[-1])

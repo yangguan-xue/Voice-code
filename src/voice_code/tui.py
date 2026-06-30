@@ -23,7 +23,7 @@ from rich.panel import Panel
 from rich.text import Text
 from textual import events, work
 from textual.app import App, ComposeResult, Screen
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.events import Paste
 from textual.message import Message
 from textual.widgets import Header, Static, TextArea
@@ -217,29 +217,53 @@ class AgentScreen(Screen):
     #composer {
         height: auto;
         margin: 0 2 1 2;
-        padding: 1;
-        background: #0a0a0a;
-        border: round #222222;
+        padding: 0;
+        background: #000000;
+        border: none;
     }
 
     #composer-meta {
-        color: #666666;
-        margin: 0 1 1 1;
+        color: #555555;
+        margin: 0 0 1 1;
+        padding: 0;
     }
 
     #input {
-        background: #000000;
+        background: #050505;
         color: #e0e0e0;
-        border: round #333333;
-        height: 5;
+        border: solid #222222;
+        height: 6;
+        min-height: 4;
+        padding: 0 1;
     }
 
     #input:focus {
-        border: round #ff3333;
+        border: solid #ff3333;
     }
 
     #input:disabled {
-        opacity: 0.65;
+        opacity: 0.6;
+    }
+
+    #main-content {
+        width: 100%;
+        height: 1fr;
+    }
+
+    #sidebar {
+        width: 28;
+        height: 100%;
+        background: #050505;
+        border-left: solid #1a1a1a;
+        padding: 0 1;
+    }
+
+    .sidebar-card {
+        height: auto;
+        margin: 0 0 1 0;
+        padding: 0 1;
+        background: #080808;
+        border: solid #1a1a1a;
     }
     """
 
@@ -264,16 +288,22 @@ class AgentScreen(Screen):
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True, icon="◆")
-        with VerticalScroll(id="messages"):
-            yield Static("", id="empty-state")
-            yield Vertical(id="history")
+        with Horizontal(id="main-content"):
+            with VerticalScroll(id="messages"):
+                yield Static("", id="empty-state")
+                yield Vertical(id="history")
+            with Vertical(id="sidebar"):
+                yield Static("", id="sidebar-model", classes="sidebar-card")
+                yield Static("", id="sidebar-tokens", classes="sidebar-card")
+                yield Static("", id="sidebar-tools", classes="sidebar-card")
+                yield Static("", id="sidebar-agents", classes="sidebar-card")
         yield Static("", id="statusbar")
         yield Static("", id="taskbar")
         with VerticalScroll(id="taskdetail"):
             yield Static("", id="taskdetail-body")
         with Vertical(id="composer"):
             yield Static(
-                "Enter 发送  |  粘贴大段文本会先折叠摘要  |  /quit 退出  |  /help 查看命令",
+                "Enter 发送  Ctrl+C 中断  Ctrl+Y 复制  /help 命令",
                 id="composer-meta",
             )
             yield PromptTextArea(
@@ -282,7 +312,7 @@ class AgentScreen(Screen):
                 soft_wrap=True,
                 show_line_numbers=False,
                 compact=True,
-                placeholder="描述接下来要做的事…",
+                placeholder="描述要完成的任务…",
             )
 
     def on_mount(self) -> None:
@@ -332,13 +362,25 @@ class AgentScreen(Screen):
                 f"  session: {self._session_id}"
             )
             self._update_statusbar()
-            self._update_composer_meta("运行时初始化完成，开始描述你要完成的任务。")
+            self._update_composer_meta("Ready.")
             self._append_system_info(f"model: {runtime.model.model_name}")
             self._append_system_info(f"tools: {', '.join(t.name for t in self._tools)}")
             self._append_system_info("Ready.")
 
         asyncio.create_task(_init())
         self.set_interval(1.0, self._refresh_background_task_status)
+        self._update_sidebar_visibility()
+
+    def on_resize(self, event: events.Resize) -> None:
+        self._update_sidebar_visibility()
+
+    def _update_sidebar_visibility(self) -> None:
+        width = self.screen.size.width
+        try:
+            sidebar = self.query_one("#sidebar", Vertical)
+            sidebar.styles.display = "none" if width < 120 else "block"
+        except Exception:
+            pass
 
     def _submit_permission_request(self, pending: PendingPermissionRequest) -> None:
         """Receive a permission request from the agent worker thread."""
@@ -387,6 +429,9 @@ class AgentScreen(Screen):
     def _composer_meta_widget(self) -> Static:
         return self.query_one("#composer-meta", Static)
 
+    def _sidebar_widget(self, name: str) -> Static:
+        return self.query_one(f"#sidebar-{name}", Static)
+
     def _taskbar_widget(self) -> Static:
         return self.query_one("#taskbar", Static)
 
@@ -419,14 +464,11 @@ class AgentScreen(Screen):
                     "  |  直接 Enter 会发送原始内容"
                 )
             else:
-                message = (
-                    "Enter 发送  |  粘贴大段文本会先折叠摘要"
-                    "  |  /quit 退出  |  /help 查看命令"
-                )
+                message = "Enter 发送  Ctrl+C 中断  Ctrl+Y 复制  /help 命令"
                 task_hint = self._subagent_task_hint()
                 if task_hint:
                     message += f"  |  {task_hint}"
-        self._composer_meta_widget().update(Text(message, style="#999999"))
+        self._composer_meta_widget().update(Text(message, style="#555555"))
 
     def _update_empty_state(self) -> None:
         current_turns = list(self._turns)
@@ -511,6 +553,47 @@ class AgentScreen(Screen):
                 title_align="left",
             )
         )
+        self._update_sidebar()
+
+    def _update_sidebar(self) -> None:
+        model_name = self._model.model_name if self._model is not None else "(loading)"
+        approx_tokens = max(0, self._metric_output_chars // 4)
+        tool_count = len(self._tools)
+        task_display = self._build_task_display()
+
+        model_text = Text()
+        model_text.append("Model\n", style="bold #666666")
+        model_text.append(f"  {model_name}", style="#e0e0e0")
+        self._sidebar_widget("model").update(model_text)
+
+        tokens_text = Text()
+        tokens_text.append("Output\n", style="bold #666666")
+        tokens_text.append(f"  ~{approx_tokens} tok", style="#e0e0e0")
+        tokens_text.append("\nCompact", style="dim #666666")
+        tokens_text.append(f"  {self._metric_compact_count}", style="#33cc33")
+        tokens_text.append("\nFallback", style="dim #666666")
+        tokens_text.append(f"  {self._metric_fallback_count}", style="#ffaa00")
+        tokens_text.append("\nResume", style="dim #666666")
+        tokens_text.append(f"  {self._metric_resume_count}", style="#4488ff")
+        self._sidebar_widget("tokens").update(tokens_text)
+
+        tools_text = Text()
+        tools_text.append("Tools\n", style="bold #666666")
+        tools_text.append(f"  {tool_count} available", style="#e0e0e0")
+        self._sidebar_widget("tools").update(tools_text)
+
+        agents_text = Text()
+        agents_text.append("Subagents\n", style="bold #666666")
+        if task_display.total:
+            agents_text.append("  running", style="dim #666666")
+            agents_text.append(f" {task_display.running}", style="bold #4488ff")
+            agents_text.append("  done", style="dim #666666")
+            agents_text.append(f" {task_display.completed}", style="bold #33cc33")
+            agents_text.append("  fail", style="dim #666666")
+            agents_text.append(f" {task_display.failed}", style="bold #ff3333")
+        else:
+            agents_text.append("  none active", style="#666666")
+        self._sidebar_widget("agents").update(agents_text)
 
     def _build_task_display(self):
         if self._subagent_service is None:

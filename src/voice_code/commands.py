@@ -16,7 +16,8 @@ from voice_code.session import (
 
 COMMON_HELP = (
     "/help /sessions /resume <id> /tasks /task <id> /task-close "
-    "/task-stop <id> /task-stop-all /task-copy /task-path /quit"
+    "/task-stop <id> /task-stop-all /task-copy /task-path /quit "
+    "/memory list|show|reindex /remember <text> /forget <id>"
 )
 TUI_EXTRA_HELP = " /clear /tools /perm /detail [n] /collapse /copy /copylast"
 
@@ -42,6 +43,9 @@ class ParsedCommand:
         "task_stop_all",
         "task_copy",
         "task_path",
+        "memory",
+        "remember",
+        "forget",
         "clear",
         "copy",
         "copylast",
@@ -130,4 +134,24 @@ def parse_command(text: str) -> ParsedCommand:
         return ParsedCommand(name="detail", raw=text, args={"turn_id": turn_id})
     if cmd == "/collapse":
         return ParsedCommand(name="collapse", raw=text)
+    if cmd in {"/memory", "/mem"}:
+        sub = parts[1].lower() if len(parts) > 1 else "list"
+        rest = " ".join(parts[2:]) if len(parts) > 2 else ""
+        return ParsedCommand(
+            name="memory",
+            raw=text,
+            args={"subcommand": sub, "arg": rest},
+        )
+    if cmd == "/remember":
+        return ParsedCommand(
+            name="remember",
+            raw=text,
+            args={"text": text[len("/remember "):] if len(text) > len("/remember ") else ""},
+        )
+    if cmd == "/forget":
+        return ParsedCommand(
+            name="forget",
+            raw=text,
+            args={"entry_id": parts[1] if len(parts) > 1 else ""},
+        )
     return ParsedCommand(name="unknown", raw=text, args={"command": cmd})
