@@ -8,7 +8,7 @@ from voice_code.compact.stats import CompactionStats
 from voice_code.compact.token_count import rough_token_count_for_messages
 from voice_code.compact.turn_split import split_into_turns
 
-_WRITE_LIKE_TOOLS = {"write", "edit", "bash"}
+_WRITE_LIKE_TOOLS = {"write", "edit", "bash", "agent"}
 
 
 def _tool_name(tc: object) -> str:

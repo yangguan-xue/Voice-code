@@ -42,6 +42,10 @@ class TaskRegistry:
                 tasks = [task for task in tasks if task.session_id == session_id]
             return [replace(task) for task in sorted(tasks, key=lambda item: item.created_at)]
 
+    def restore_tasks(self, tasks: list[AgentTask]) -> None:
+        with self._lock:
+            self._tasks = {task.task_id: replace(task) for task in tasks}
+
     def update_status(self, task_id: str, status: TaskStatus, *, error: str | None = None) -> None:
         with self._lock:
             task = self._require_task(task_id)

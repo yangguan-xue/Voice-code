@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import tempfile
 from pathlib import Path
 
 import pytest
 
 from voice_code.context import get_context, get_git_status, load_claude_md
-
 
 # ============================================================
 # Git Status 测试

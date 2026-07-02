@@ -5,28 +5,22 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from langchain_core.messages import BaseMessage
-
 from voice_code.session import (
-    TranscriptReader,
-    TranscriptWriter,
-    get_session_path,
+    ResumeRuntimeResult,
     list_sessions,
+    resume_runtime_session,
 )
 
 COMMON_HELP = (
     "/help /sessions /resume <id> /tasks /task <id> /task-close "
-    "/task-stop <id> /task-stop-all /task-copy /task-path /quit "
-    "/memory list|show|reindex /remember <text> /forget <id>"
+    "/task-stop <id> /task-stop-all /task-copy /task-path /quit"
 )
-TUI_EXTRA_HELP = " /clear /tools /perm /detail [n] /collapse /copy /copylast"
+TUI_EXTRA_HELP = (
+    " /clear /tools /perm /perm-rules /perm-clear [scope]"
+    " /detail [n] /collapse /copy /copylast"
+)
 
-
-@dataclass
-class ResumeSessionResult:
-    session_id: str
-    messages: list[BaseMessage]
-    transcript_writer: TranscriptWriter
+ResumeSessionResult = ResumeRuntimeResult
 
 
 @dataclass
@@ -43,14 +37,13 @@ class ParsedCommand:
         "task_stop_all",
         "task_copy",
         "task_path",
-        "memory",
-        "remember",
-        "forget",
         "clear",
         "copy",
         "copylast",
         "tools",
         "perm",
+        "perm_rules",
+        "perm_clear",
         "detail",
         "collapse",
         "unknown",
@@ -70,16 +63,8 @@ def format_session_lines(limit: int = 10) -> list[str]:
     ]
 
 
-def resume_session(session_id: str) -> ResumeSessionResult:
-    path = get_session_path(session_id)
-    if not path.exists():
-        raise FileNotFoundError(session_id)
-    messages = TranscriptReader(path).read_all()
-    return ResumeSessionResult(
-        session_id=session_id,
-        messages=messages,
-        transcript_writer=TranscriptWriter(path),
-    )
+def resume_session(session_id: str) -> ResumeRuntimeResult:
+    return resume_runtime_session(session_id)
 
 
 def parse_command(text: str) -> ParsedCommand:
@@ -129,29 +114,17 @@ def parse_command(text: str) -> ParsedCommand:
         return ParsedCommand(name="tools", raw=text)
     if cmd == "/perm":
         return ParsedCommand(name="perm", raw=text)
+    if cmd == "/perm-rules":
+        return ParsedCommand(name="perm_rules", raw=text)
+    if cmd == "/perm-clear":
+        return ParsedCommand(
+            name="perm_clear",
+            raw=text,
+            args={"scope": parts[1] if len(parts) > 1 else "session"},
+        )
     if cmd == "/detail":
         turn_id = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
         return ParsedCommand(name="detail", raw=text, args={"turn_id": turn_id})
     if cmd == "/collapse":
         return ParsedCommand(name="collapse", raw=text)
-    if cmd in {"/memory", "/mem"}:
-        sub = parts[1].lower() if len(parts) > 1 else "list"
-        rest = " ".join(parts[2:]) if len(parts) > 2 else ""
-        return ParsedCommand(
-            name="memory",
-            raw=text,
-            args={"subcommand": sub, "arg": rest},
-        )
-    if cmd == "/remember":
-        return ParsedCommand(
-            name="remember",
-            raw=text,
-            args={"text": text[len("/remember "):] if len(text) > len("/remember ") else ""},
-        )
-    if cmd == "/forget":
-        return ParsedCommand(
-            name="forget",
-            raw=text,
-            args={"entry_id": parts[1] if len(parts) > 1 else ""},
-        )
     return ParsedCommand(name="unknown", raw=text, args={"command": cmd})

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import queue
 import subprocess
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from langchain_core.messages import (
@@ -19,6 +21,7 @@ from langchain_core.messages import (
 )
 from langchain_openai import ChatOpenAI
 from rich.columns import Columns
+from rich.console import Group
 from rich.panel import Panel
 from rich.text import Text
 from textual import events, work
@@ -26,7 +29,7 @@ from textual.app import App, ComposeResult, Screen
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.events import Paste
 from textual.message import Message
-from textual.widgets import Header, Static, TextArea
+from textual.widgets import Static, TextArea
 
 from voice_code.agent.abort import AbortSignal
 from voice_code.agent.loop import agent_loop
@@ -40,13 +43,38 @@ from voice_code.commands import (
     resume_session,
 )
 from voice_code.llm.models import list_model_profiles
-from voice_code.permissions import PermissionBehavior, PermissionDecision
+from voice_code.permissions import (
+    PermissionBehavior,
+    PermissionDecision,
+    clear_permission_rules,
+    export_permission_state,
+    load_session_rules_from_state,
+    load_workspace_rules,
+    permission_rule_summary,
+)
 from voice_code.runtime import bootstrap_runtime
-from voice_code.session import TranscriptWriter
+from voice_code.session import (
+    ResumeRuntimeResult,
+    SessionRuntimeState,
+    TranscriptReader,
+    TranscriptWriter,
+    build_session_runtime_state,
+    group_session_summaries,
+    list_session_summaries,
+    load_session_state,
+    save_session_state,
+)
 from voice_code.subagents.service import SubagentService, get_or_create_service
 from voice_code.theme import (
+    ACCENT_BLUE,
+    ACCENT_GREEN,
+    ACCENT_RED,
     BG_SECONDARY,
     BORDER_PRIMARY,
+    BORDER_SECONDARY,
+    TEXT_DIM,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
 )
 from voice_code.transcript_view import (
     PlainTurn,
@@ -81,9 +109,7 @@ from voice_code.tui_runtime import (
     build_runtime_display,
     build_task_display,
 )
-
-STATUS_PANEL_BG = BG_SECONDARY
-STATUS_PANEL_BORDER = BORDER_PRIMARY
+from voice_code.tui_sessions import SessionSelected, SessionSidebarView
 
 
 @dataclass
@@ -162,16 +188,43 @@ class AgentScreen(Screen):
     DEFAULT_CSS = """
     AgentScreen {
         background: #000000;
-        color: #e0e0e0;
+        color: #ebe7de;
+    }
+
+    #topbar {
+        height: 3;
+        padding: 0 2;
+        background: #000000;
+        border-bottom: solid #161616;
+        color: #a59f95;
+    }
+
+    #main-content {
+        width: 100%;
+        height: 1fr;
     }
 
     #messages {
         background: #000000;
         padding: 1 2 0 2;
         scrollbar-background: #000000;
-        scrollbar-color: #333333;
-        scrollbar-color-hover: #444444;
+        scrollbar-color: #232323;
+        scrollbar-color-hover: #303030;
         scrollbar-corner-color: #000000;
+    }
+
+    #session-sidebar {
+        width: 32;
+        min-width: 26;
+        height: 100%;
+        padding: 1 1 1 2;
+        background: #000000;
+        border-right: solid #161616;
+    }
+
+    #session-sidebar-panel {
+        width: 100%;
+        height: auto;
     }
 
     #history {
@@ -181,89 +234,64 @@ class AgentScreen(Screen):
 
     #empty-state {
         width: 100%;
-        margin: 0 0 1 0;
-        padding: 1 2;
+        margin: 1 0 2 0;
+        padding: 1 1 1 2;
+        background: transparent;
+        border-left: solid #242424;
+        color: #8d877f;
+    }
+
+    #sidebar {
+        width: 34;
+        min-width: 28;
+        height: 100%;
+        padding: 1 2 1 1;
         background: #000000;
-        border: round #222222;
-        color: #999999;
+        border-left: solid #161616;
     }
 
-    #statusbar {
-        margin: 0 2 1 2;
-        height: 3;
-    }
-
-    #taskbar {
-        margin: 0 2 1 2;
+    #sidebar-panel {
+        width: 100%;
         height: auto;
     }
 
-    #taskdetail {
-        margin: 0 2 1 2;
-        height: 16;
-        min-height: 8;
-        background: #0a0a0a;
-        border: round #222222;
-        scrollbar-background: #0a0a0a;
-        scrollbar-color: #333333;
-        scrollbar-color-hover: #444444;
-        scrollbar-corner-color: #0a0a0a;
-    }
-
-    #taskdetail-body {
-        width: 100%;
+    #statusbar {
+        display: none;
     }
 
     #composer {
         height: auto;
         margin: 0 2 1 2;
-        padding: 0;
+        padding: 1 0 0 0;
         background: #000000;
-        border: none;
+        border-top: solid #161616;
     }
 
     #composer-meta {
-        color: #555555;
+        color: #6f6961;
         margin: 0 0 1 1;
         padding: 0;
     }
 
     #input {
         background: #050505;
-        color: #e0e0e0;
-        border: solid #222222;
-        height: 6;
+        color: #ebe7de;
+        border: solid #1c1c1c;
+        height: 5;
         min-height: 4;
         padding: 0 1;
     }
 
     #input:focus {
-        border: solid #ff3333;
+        border: solid #2a2a2a;
     }
 
     #input:disabled {
         opacity: 0.6;
     }
 
-    #main-content {
-        width: 100%;
-        height: 1fr;
-    }
-
-    #sidebar {
-        width: 28;
-        height: 100%;
-        background: #050505;
-        border-left: solid #1a1a1a;
-        padding: 0 1;
-    }
-
-    .sidebar-card {
-        height: auto;
-        margin: 0 0 1 0;
-        padding: 0 1;
-        background: #080808;
-        border: solid #1a1a1a;
+    #taskbar, #taskdetail {
+        display: none;
     }
     """
 
@@ -271,6 +299,7 @@ class AgentScreen(Screen):
 
     BINDINGS = [
         ("ctrl+c", "interrupt_turn", "Interrupt turn"),
+        ("ctrl+b", "focus_session_sidebar", "History"),
         ("ctrl+y", "copy_last_reply", "Copy last reply"),
         ("ctrl+shift+y", "copy_last_turn", "Copy last turn"),
         ("ctrl+shift+c", "copy_history", "Copy history"),
@@ -285,18 +314,23 @@ class AgentScreen(Screen):
         self._transcript_writer: TranscriptWriter | None = None
         self._abort_signal = AbortSignal()
         self._subagent_service: SubagentService | None = None
+        self._cwd = ""
+        self._active_phase = ""
+        self._active_tool_count = 0
+        self._runtime_state: SessionRuntimeState | None = None
+        self._last_persisted_runtime_signature = ""
+        self._perm_ctx: Any | None = None
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True, icon="◆")
+        yield Static("", id="topbar")
         with Horizontal(id="main-content"):
+            with Vertical(id="session-sidebar"):
+                yield SessionSidebarView(id="session-sidebar-panel")
             with VerticalScroll(id="messages"):
                 yield Static("", id="empty-state")
                 yield Vertical(id="history")
             with Vertical(id="sidebar"):
-                yield Static("", id="sidebar-model", classes="sidebar-card")
-                yield Static("", id="sidebar-tokens", classes="sidebar-card")
-                yield Static("", id="sidebar-tools", classes="sidebar-card")
-                yield Static("", id="sidebar-agents", classes="sidebar-card")
+                yield Static("", id="sidebar-panel")
         yield Static("", id="statusbar")
         yield Static("", id="taskbar")
         with VerticalScroll(id="taskdetail"):
@@ -312,7 +346,7 @@ class AgentScreen(Screen):
                 soft_wrap=True,
                 show_line_numbers=False,
                 compact=True,
-                placeholder="描述要完成的任务…",
+                placeholder="输入你的任务…",
             )
 
     def on_mount(self) -> None:
@@ -333,6 +367,8 @@ class AgentScreen(Screen):
         self._metric_compact_count = 0
         self._metric_fallback_count = 0
         self._metric_resume_count = 0
+        self._active_phase = ""
+        self._active_tool_count = 0
         self._pending_paste_text = ""
         self._showing_paste_summary = False
         self._history_refresh_running = False
@@ -350,22 +386,31 @@ class AgentScreen(Screen):
             self._fallback_profile = runtime.fallback_profile
             self._prompt = runtime.prompt
             self._session_id = runtime.session_id
+            self._cwd = runtime.cwd
             self._transcript_writer = runtime.transcript_writer
+            self._runtime_state = load_session_state(
+                runtime.session_id,
+                fallback_cwd=runtime.cwd,
+            ).state
+            self._perm_ctx.workspace_root = runtime.cwd
+            self._perm_ctx.workspace_rules = load_workspace_rules(runtime.cwd)
+            self._perm_ctx.session_id = runtime.session_id
+            self._perm_ctx.session_rules = load_session_rules_from_state(
+                self._runtime_state.permission_state
+            )
+            self._perm_ctx.on_change = lambda _ctx: self._persist_session_runtime_state(force=True)
             self._subagent_service = get_or_create_service(
                 self._session_id,
                 event_loop=asyncio.get_running_loop(),
             )
             self.app.title = "语码"
-            self.sub_title = (
-                f"model: {runtime.model.model_name}"
-                f"  cwd: {runtime.cwd}"
-                f"  session: {self._session_id}"
-            )
             self._update_statusbar()
+            self._update_session_sidebar()
             self._update_composer_meta("Ready.")
             self._append_system_info(f"model: {runtime.model.model_name}")
             self._append_system_info(f"tools: {', '.join(t.name for t in self._tools)}")
             self._append_system_info("Ready.")
+            self._persist_session_runtime_state(force=True)
 
         asyncio.create_task(_init())
         self.set_interval(1.0, self._refresh_background_task_status)
@@ -377,8 +422,13 @@ class AgentScreen(Screen):
     def _update_sidebar_visibility(self) -> None:
         width = self.screen.size.width
         try:
+            session_sidebar = self.query_one("#session-sidebar", Vertical)
+            session_sidebar.styles.display = "none" if width < 132 else "block"
+        except Exception:
+            pass
+        try:
             sidebar = self.query_one("#sidebar", Vertical)
-            sidebar.styles.display = "none" if width < 120 else "block"
+            sidebar.styles.display = "none" if width < 168 else "block"
         except Exception:
             pass
 
@@ -423,14 +473,17 @@ class AgentScreen(Screen):
         )
         self.app.push_screen(PermissionDialog(pending.request), callback=on_done)
 
-    def _statusbar_widget(self) -> Static:
-        return self.query_one("#statusbar", Static)
+    def _topbar_widget(self) -> Static:
+        return self.query_one("#topbar", Static)
 
     def _composer_meta_widget(self) -> Static:
         return self.query_one("#composer-meta", Static)
 
-    def _sidebar_widget(self, name: str) -> Static:
-        return self.query_one(f"#sidebar-{name}", Static)
+    def _sidebar_widget(self) -> Static:
+        return self.query_one("#sidebar-panel", Static)
+
+    def _session_sidebar_widget(self) -> SessionSidebarView:
+        return self.query_one("#session-sidebar-panel", SessionSidebarView)
 
     def _taskbar_widget(self) -> Static:
         return self.query_one("#taskbar", Static)
@@ -464,11 +517,11 @@ class AgentScreen(Screen):
                     "  |  直接 Enter 会发送原始内容"
                 )
             else:
-                message = "Enter 发送  Ctrl+C 中断  Ctrl+Y 复制  /help 命令"
+                message = "Enter 发送  ·  Ctrl+C 中断  ·  Ctrl+Y 复制  ·  /help"
                 task_hint = self._subagent_task_hint()
                 if task_hint:
-                    message += f"  |  {task_hint}"
-        self._composer_meta_widget().update(Text(message, style="#555555"))
+                    message += f"  ·  {task_hint}"
+        self._composer_meta_widget().update(Text(message, style=TEXT_DIM))
 
     def _update_empty_state(self) -> None:
         current_turns = list(self._turns)
@@ -482,77 +535,39 @@ class AgentScreen(Screen):
             return
 
         welcome = Text()
-        welcome.append("语码\n", style="bold #e0e0e0")
-        welcome.append("一个面向代码与推理工作的终端 agent。\n\n", style="#999999")
-        welcome.append("开始方式\n", style="bold #ff3333")
-        welcome.append("• 直接描述你要完成的任务\n", style="#999999")
-        welcome.append("• 用 /help 查看命令，用 /resume 恢复历史会话\n", style="#999999")
-        welcome.append("• 历史区里的 tool 行可以点击展开或折叠结果", style="#999999")
+        welcome.append("语码\n", style=f"bold {TEXT_PRIMARY}")
+        welcome.append("一个面向代码与推理工作的终端 agent。\n\n", style=TEXT_SECONDARY)
+        welcome.append("开始方式\n", style=f"bold {TEXT_PRIMARY}")
+        welcome.append("• 直接描述你要完成的任务\n", style=TEXT_SECONDARY)
+        welcome.append("• 用 /help 查看命令，用 /resume 恢复历史会话\n", style=TEXT_SECONDARY)
+        welcome.append("• 工具结果支持展开与折叠，历史区会自动跟随最新输出", style=TEXT_SECONDARY)
         widget.update(welcome)
         widget.styles.display = "block"
 
     def _update_statusbar(self, phase: str = "", tool_count: int = 0) -> None:
         phase_label = phase or ("busy" if self._is_busy else "idle")
-        approx_tokens = max(0, self._metric_output_chars // 4)
-        model_name = self._model.model_name if self._model is not None else "(loading)"
-        task_display = self._build_task_display()
+        self._active_phase = phase_label
+        self._active_tool_count = tool_count
+
         left = Text()
-        left.append(" model ", style="bold #ffffff on #ff3333")
-        left.append(f" {model_name} ", style="bold #e0e0e0")
-        left.append("  session ", style="dim #666666")
-        left.append(self._session_id, style="bold #e0e0e0")
-        left.append("  phase ", style="dim #666666")
-        left.append(f" {phase_label} ", style="bold #000000 on #ffaa00")
-        if tool_count:
-            left.append("  tools ", style="dim #666666")
-            left.append(f" {tool_count} ", style="bold #000000 on #33cc33")
-        if task_display.total:
-            left.append("  agents ", style="dim #666666")
-            run_style = (
-                "bold #ffffff on #4488ff"
-                if task_display.running
-                else "bold #ffffff on #666666"
-            )
-            left.append(
-                f" run {task_display.running} ",
-                style=run_style,
-            )
-            if task_display.completed:
-                left.append(
-                    f" done {task_display.completed} ",
-                    style="bold #000000 on #33cc33",
-                )
-            if task_display.failed:
-                left.append(
-                    f" fail {task_display.failed} ",
-                    style="bold #ffffff on #ff3333",
-                )
-        left.append("  view ", style="dim #666666")
-        left.append(
-            " follow " if self._sticky_follow else " history ",
-            style="bold #ffffff on #4488ff" if self._sticky_follow else "bold #0b0f14 on #8f9aa8",
-        )
+        left.append("语码", style=f"bold {ACCENT_RED}")
+        if self._cwd:
+            left.append("   ", style=TEXT_DIM)
+            left.append(self._cwd, style=TEXT_SECONDARY)
 
         right = Text(justify="right")
-        right.append("out ", style="dim #666666")
-        right.append(f"~{approx_tokens} tok", style="bold #e0e0e0")
-        right.append("  compact ", style="dim #666666")
-        right.append(str(self._metric_compact_count), style="bold #33cc33")
-        right.append("  fallback ", style="dim #666666")
-        right.append(str(self._metric_fallback_count), style="bold #ffaa00")
-        right.append("  resume ", style="dim #666666")
-        right.append(str(self._metric_resume_count), style="bold #4488ff")
+        right.append("● ", style=f"bold {ACCENT_RED}")
+        right.append("会话中", style=TEXT_SECONDARY)
+        right.append("   ", style=TEXT_DIM)
+        right.append(self._session_id, style=TEXT_DIM)
+        if phase_label != "idle":
+            right.append("   ", style=TEXT_DIM)
+            right.append(phase_label, style=TEXT_DIM)
+        if tool_count:
+            right.append("   ", style=TEXT_DIM)
+            right.append(f"{tool_count} tool", style=TEXT_DIM)
 
-        self._statusbar_widget().update(
-            Panel(
-                Columns([left, right], expand=True, equal=False),
-                border_style=STATUS_PANEL_BORDER,
-                style=f"on {STATUS_PANEL_BG}",
-                padding=(0, 1),
-                title=" runtime ",
-                title_align="left",
-            )
-        )
+        self._topbar_widget().update(Columns([left, right], expand=True, equal=False))
         self._update_sidebar()
 
     def _update_sidebar(self) -> None:
@@ -561,39 +576,313 @@ class AgentScreen(Screen):
         tool_count = len(self._tools)
         task_display = self._build_task_display()
 
-        model_text = Text()
-        model_text.append("Model\n", style="bold #666666")
-        model_text.append(f"  {model_name}", style="#e0e0e0")
-        self._sidebar_widget("model").update(model_text)
+        def section(title: str, body: Text) -> Group:
+            heading = Text()
+            heading.append(title, style=f"bold {TEXT_PRIMARY}")
+            heading.append("\n", style=TEXT_DIM)
+            return Group(heading, body)
 
-        tokens_text = Text()
-        tokens_text.append("Output\n", style="bold #666666")
-        tokens_text.append(f"  ~{approx_tokens} tok", style="#e0e0e0")
-        tokens_text.append("\nCompact", style="dim #666666")
-        tokens_text.append(f"  {self._metric_compact_count}", style="#33cc33")
-        tokens_text.append("\nFallback", style="dim #666666")
-        tokens_text.append(f"  {self._metric_fallback_count}", style="#ffaa00")
-        tokens_text.append("\nResume", style="dim #666666")
-        tokens_text.append(f"  {self._metric_resume_count}", style="#4488ff")
-        self._sidebar_widget("tokens").update(tokens_text)
+        def metric_row(label: str, value: str, *, value_style: str = TEXT_PRIMARY) -> Text:
+            row = Text()
+            row.append(label, style=TEXT_DIM)
+            row.append(" " * max(1, 12 - len(label)))
+            row.append(value, style=value_style)
+            return row
 
-        tools_text = Text()
-        tools_text.append("Tools\n", style="bold #666666")
-        tools_text.append(f"  {tool_count} available", style="#e0e0e0")
-        self._sidebar_widget("tools").update(tools_text)
+        sections: list[Group] = []
 
-        agents_text = Text()
-        agents_text.append("Subagents\n", style="bold #666666")
-        if task_display.total:
-            agents_text.append("  running", style="dim #666666")
-            agents_text.append(f" {task_display.running}", style="bold #4488ff")
-            agents_text.append("  done", style="dim #666666")
-            agents_text.append(f" {task_display.completed}", style="bold #33cc33")
-            agents_text.append("  fail", style="dim #666666")
-            agents_text.append(f" {task_display.failed}", style="bold #ff3333")
+        model_body = Text()
+        model_body.append(model_name, style=TEXT_PRIMARY)
+        model_body.append("\n", style=TEXT_DIM)
+        model_body.append("当前模型", style=TEXT_DIM)
+        sections.append(section("模型", model_body))
+
+        usage_ratio = min(1.0, approx_tokens / 128000) if approx_tokens else 0.0
+        bar_fill = max(1, int(usage_ratio * 12)) if approx_tokens else 0
+        context_body = Text()
+        context_body.append(f"~{approx_tokens:,} / 128,000\n", style=TEXT_PRIMARY)
+        if bar_fill:
+            context_body.append("■" * bar_fill, style=ACCENT_RED)
+            context_body.append("■" * (12 - bar_fill), style=BORDER_SECONDARY)
         else:
-            agents_text.append("  none active", style="#666666")
-        self._sidebar_widget("agents").update(agents_text)
+            context_body.append("■" * 12, style=BORDER_PRIMARY)
+        context_body.append(f"\n{usage_ratio * 100:0.1f}%", style=TEXT_DIM)
+        sections.append(section("上下文", context_body))
+
+        token_rows = [
+            metric_row("输出", f"{approx_tokens:,}"),
+            metric_row("压缩", str(self._metric_compact_count), value_style=ACCENT_GREEN),
+            metric_row("降级", str(self._metric_fallback_count), value_style=ACCENT_BLUE),
+            metric_row("续写", str(self._metric_resume_count)),
+        ]
+        token_body = Text()
+        for index, row in enumerate(token_rows):
+            token_body.append_text(row)
+            if index != len(token_rows) - 1:
+                token_body.append("\n")
+        sections.append(section("Tokens", token_body))
+
+        tool_rows = [
+            metric_row("已注册", str(tool_count)),
+            metric_row(
+                "执行中",
+                str(self._active_tool_count),
+                value_style=ACCENT_RED if self._active_tool_count else TEXT_PRIMARY,
+            ),
+        ]
+        tools_body = Text()
+        for index, row in enumerate(tool_rows):
+            tools_body.append_text(row)
+            if index != len(tool_rows) - 1:
+                tools_body.append("\n")
+        sections.append(section("工具", tools_body))
+
+        agents_body = Text()
+        if task_display.total:
+            agent_rows = [
+                metric_row("运行中", str(task_display.running), value_style=ACCENT_RED),
+                metric_row("已完成", str(task_display.completed), value_style=ACCENT_GREEN),
+                metric_row("失败", str(task_display.failed), value_style=ACCENT_BLUE),
+            ]
+            for index, row in enumerate(agent_rows):
+                agents_body.append_text(row)
+                if index != len(agent_rows) - 1:
+                    agents_body.append("\n")
+        else:
+            agents_body.append("当前没有子代理任务", style=TEXT_DIM)
+        sections.append(section("子代理", agents_body))
+
+        body_renderables: list[Any] = []
+        for index, item in enumerate(sections):
+            if index:
+                divider = Text("─" * 24, style=BORDER_PRIMARY)
+                body_renderables.append(divider)
+            body_renderables.append(item)
+
+        self._sidebar_widget().update(
+            Panel(
+                Group(*body_renderables),
+                border_style=BORDER_PRIMARY,
+                style=f"on {BG_SECONDARY}",
+                padding=(1, 1),
+                expand=True,
+            )
+        )
+
+    def _update_session_sidebar(self) -> None:
+        sessions = list_session_summaries(
+            limit=20,
+            current_session_id=self._session_id,
+        )
+        groups = group_session_summaries(sessions)
+        self.run_worker(
+            self._session_sidebar_widget().sync_groups(groups),
+            group="session-sidebar-refresh",
+            exclusive=True,
+        )
+
+    def _session_resume_notice(self, resumed: ResumeRuntimeResult) -> str:
+        title = resumed.runtime_state.title.strip()
+        project = resumed.runtime_state.project_label.strip()
+        parts = [f"已恢复 session {resumed.session_id}"]
+        if title:
+            parts.append(f"标题：{title}")
+        if project:
+            parts.append(f"项目：{project}")
+        return "  ·  ".join(parts)
+
+    def _apply_resumed_runtime_state(self, resumed: ResumeRuntimeResult) -> None:
+        self._runtime_state = resumed.runtime_state
+        resumed_cwd = resumed.runtime_state.cwd.strip()
+        if resumed_cwd:
+            self._cwd = resumed_cwd
+        self._metric_compact_count = int(
+            resumed.runtime_state.compact_state.get("compact_count", 0) or 0
+        )
+        self._metric_fallback_count = int(
+            resumed.runtime_state.ui_state.get("fallback_count", 0) or 0
+        )
+        self._metric_resume_count = int(
+            resumed.runtime_state.ui_state.get("resume_count", 0) or 0
+        )
+        model_name = self._model.model_name if self._model is not None else "(loading)"
+        self.sub_title = (
+            f"model: {model_name}"
+            f"  cwd: {self._cwd or os.getcwd()}"
+            f"  session: {self._session_id}"
+        )
+
+    def _restore_subagent_runtime_state(self, resumed: ResumeRuntimeResult) -> None:
+        if self._subagent_service is None:
+            return
+        if not hasattr(self._subagent_service, "has_runtime_state"):
+            self._selected_task_id = None
+            return
+        if not self._subagent_service.has_runtime_state():
+            self._subagent_service.restore_runtime_state(
+                task_state=resumed.runtime_state.task_state,
+                notifications=resumed.runtime_state.subagent_notifications,
+            )
+        selected_task_id = str(
+            resumed.runtime_state.task_state.get("selected_task_id", "")
+        ).strip()
+        if selected_task_id and self._subagent_service.get_task_transcript_path(selected_task_id):
+            self._selected_task_id = selected_task_id
+        else:
+            self._selected_task_id = None
+        if self._perm_ctx is not None:
+            self._perm_ctx.session_id = resumed.session_id
+            self._perm_ctx.session_rules = load_session_rules_from_state(
+                resumed.runtime_state.permission_state
+            )
+
+    def _export_tool_result_ui_state(self) -> dict[str, dict[str, Any]]:
+        tool_results: dict[str, dict[str, Any]] = {}
+        for turn in self._turns:
+            if not hasattr(turn, "entries"):
+                continue
+            for entry in turn.entries:
+                if entry.kind != "tool_pair" or not entry.tool_call_id:
+                    continue
+                if not entry.tool_result or not entry.is_result_manual:
+                    continue
+                tool_results[entry.tool_call_id] = {
+                    "collapsed": entry.is_result_collapsed,
+                    "manual": entry.is_result_manual,
+                }
+        return tool_results
+
+    def _restore_tool_result_ui_state(self, runtime_state: SessionRuntimeState) -> None:
+        tool_results = runtime_state.ui_state.get("tool_results", {})
+        if not isinstance(tool_results, dict):
+            return
+        for turn in self._turns:
+            if not hasattr(turn, "entries"):
+                continue
+            for entry in turn.entries:
+                if entry.kind != "tool_pair" or not entry.tool_call_id:
+                    continue
+                saved = tool_results.get(entry.tool_call_id)
+                if not isinstance(saved, dict):
+                    continue
+                entry.is_result_collapsed = bool(saved.get("collapsed", entry.is_result_collapsed))
+                entry.is_result_manual = bool(saved.get("manual", True))
+
+    def _infer_session_title(self) -> str:
+        if self._transcript_writer is not None:
+            try:
+                info = TranscriptReader(self._transcript_writer.file_path).read_info()
+                title = str(info.get("title", "")).strip()
+                if title:
+                    return title
+            except Exception:
+                pass
+        if self._runtime_state is not None:
+            return self._runtime_state.title.strip()
+        return ""
+
+    def _build_runtime_state_snapshot(self) -> SessionRuntimeState | None:
+        if not self._session_id or self._session_id == "initializing":
+            return None
+        base = self._runtime_state or build_session_runtime_state(
+            session_id=self._session_id,
+            cwd=self._cwd,
+        )
+        model_name = self._model.model_name if self._model is not None else base.model_name
+        state = build_session_runtime_state(
+            session_id=self._session_id,
+            cwd=self._cwd or base.cwd,
+            created_at=base.created_at or None,
+            updated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            title=self._infer_session_title() or base.title,
+            agent_mode=base.agent_mode or "default",
+            model_name=model_name,
+        )
+        state.todo_state = dict(base.todo_state)
+        state.compact_state = dict(base.compact_state)
+        state.compact_state["compact_count"] = self._metric_compact_count
+        state.ui_state = dict(base.ui_state)
+        state.ui_state["sticky_follow"] = self._sticky_follow
+        state.ui_state["fallback_count"] = self._metric_fallback_count
+        state.ui_state["resume_count"] = self._metric_resume_count
+        state.ui_state["tool_results"] = self._export_tool_result_ui_state()
+        if self._perm_ctx is not None:
+            state.permission_state = dict(export_permission_state(self._perm_ctx))
+        if (
+            self._subagent_service is not None
+            and hasattr(self._subagent_service, "export_task_state")
+            and hasattr(self._subagent_service, "export_notifications_state")
+        ):
+            state.task_state = self._subagent_service.export_task_state()
+            state.subagent_notifications = self._subagent_service.export_notifications_state()
+        else:
+            state.task_state = dict(base.task_state)
+            state.subagent_notifications = list(base.subagent_notifications)
+        if self._selected_task_id:
+            state.task_state["selected_task_id"] = self._selected_task_id
+        else:
+            state.task_state.pop("selected_task_id", None)
+        return state
+
+    def _persist_session_runtime_state(self, *, force: bool = False) -> None:
+        state = self._build_runtime_state_snapshot()
+        if state is None:
+            return
+        signature = json.dumps(state.to_dict(), ensure_ascii=False, sort_keys=True)
+        if not force and signature == self._last_persisted_runtime_signature:
+            return
+        save_session_state(state)
+        self._runtime_state = state
+        self._last_persisted_runtime_signature = signature
+
+    def _resume_into_current_view(self, session_id: str) -> bool:
+        try:
+            resumed = resume_session(session_id)
+        except FileNotFoundError:
+            self._append_system_error(f"Session not found: {session_id}")
+            return False
+
+        self._turns = self._messages_to_turns(resumed.messages)
+        self._current_turn = None
+        self._current_turn_has_live_thinking = False
+        self._resume_messages = resumed.messages
+        if self._transcript_writer is not None:
+            self._transcript_writer.close()
+        self._sticky_follow = True
+        self._session_id = resumed.session_id
+        self._transcript_writer = resumed.transcript_writer
+        self._subagent_service = get_or_create_service(
+            self._session_id,
+            event_loop=asyncio.get_running_loop(),
+        )
+        self._restore_subagent_runtime_state(resumed)
+        self._pending_paste_text = ""
+        self._showing_paste_summary = False
+        self._apply_resumed_runtime_state(resumed)
+        self._restore_tool_result_ui_state(resumed.runtime_state)
+        self._sticky_follow = bool(resumed.runtime_state.ui_state.get("sticky_follow", True))
+        self._refresh_history()
+        self._update_statusbar()
+        self._update_session_sidebar()
+        self._update_composer_meta(self._session_resume_notice(resumed))
+        self._append_system_info(f"Resumed session: {resumed.session_id}")
+        self._persist_session_runtime_state(force=True)
+        self.query_one("#input", TextArea).focus()
+        return True
+
+    def on_session_selected(self, event: SessionSelected) -> None:
+        event.stop()
+        if self._is_busy:
+            self._append_system_info("当前任务执行中，暂不支持切换会话。")
+            return
+        self._resume_into_current_view(event.session_id)
+
+    def action_focus_session_sidebar(self) -> None:
+        try:
+            self._session_sidebar_widget().focus_active_session()
+            self._update_composer_meta("已聚焦历史侧栏  ·  上下选择  ·  Enter 恢复会话")
+        except Exception:
+            self._append_system_info("历史侧栏暂不可用。")
 
     def _build_task_display(self):
         if self._subagent_service is None:
@@ -613,6 +902,7 @@ class AgentScreen(Screen):
     def _refresh_background_task_status(self) -> None:
         self._update_statusbar()
         self._update_task_widgets()
+        self._persist_session_runtime_state()
         if not self._is_busy:
             self._update_composer_meta()
 
@@ -658,46 +948,7 @@ class AgentScreen(Screen):
         return self._subagent_service.get_task_transcript_path(self._selected_task_id) or ""
 
     def _update_task_widgets(self) -> None:
-        taskbar = self._taskbar_widget()
-        taskdetail = self._taskdetail_widget()
-        taskdetail_body = self._taskdetail_body_widget()
-        lines = self._task_overview_lines()
-        if not lines:
-            taskbar.update(Text(""))
-            taskbar.styles.display = "none"
-            taskdetail_body.update(Text(""))
-            taskdetail.styles.display = "none"
-            return
-
-        taskbar.update(
-            Panel(
-                Text("\n".join(lines), style="#e0e0e0"),
-                title=" subagents ",
-                title_align="left",
-                border_style=STATUS_PANEL_BORDER,
-                style=f"on {STATUS_PANEL_BG}",
-                padding=(0, 1),
-            )
-        )
-        taskbar.styles.display = "block"
-
-        detail_text = self._selected_task_detail_text()
-        if not detail_text:
-            taskdetail_body.update(Text(""))
-            taskdetail.styles.display = "none"
-            return
-        taskdetail_body.update(
-            Panel(
-                Text(detail_text, style="#e0e0e0"),
-                title=f" task {self._selected_task_id} ",
-                title_align="left",
-                border_style="#333333",
-                style=f"on {STATUS_PANEL_BG}",
-                padding=(0, 1),
-            )
-        )
-        taskdetail.styles.display = "block"
-        taskdetail.scroll_home(animate=False)
+        return
 
     def _render_thinking_block(self, text: str) -> Text:
         rendered = Text()
@@ -717,25 +968,30 @@ class AgentScreen(Screen):
 
     def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
         self._sticky_follow = False
+        self._persist_session_runtime_state()
         self._update_composer_meta()
 
     def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
         widget = self._messages_widget()
         if getattr(widget, "scroll_y", 0) >= getattr(widget, "max_scroll_y", 0) - 2:
             self._sticky_follow = True
+        self._persist_session_runtime_state()
         self._update_composer_meta()
 
     def on_key(self, event: events.Key) -> None:
         if event.key in {"end", "ctrl+end"}:
             self._sticky_follow = True
             self._scroll_to_bottom(force=True)
+            self._persist_session_runtime_state()
             self._update_composer_meta()
         elif event.key in {"pageup", "up"}:
             self._sticky_follow = False
+            self._persist_session_runtime_state()
             self._update_composer_meta()
         elif event.key in {"pagedown", "down"}:
             if self._is_near_bottom():
                 self._sticky_follow = True
+            self._persist_session_runtime_state()
             self._update_composer_meta()
 
     def _refresh_history(self) -> None:
@@ -938,6 +1194,8 @@ class AgentScreen(Screen):
         self._current_turn_has_live_thinking = False
         self._sticky_follow = True
         self._refresh_history()
+        self._update_session_sidebar()
+        self._persist_session_runtime_state()
 
     def _clear_live_regions(self) -> None:
         self._update_statusbar()
@@ -1313,7 +1571,24 @@ class AgentScreen(Screen):
         elif command.name == "tools":
             self._append_system_info(", ".join(t.name for t in self._tools))
         elif command.name == "perm":
-            self._append_system_info(f"mode: {self._perm_ctx.mode}")
+            for line in permission_rule_summary(self._perm_ctx):
+                self._append_system_info(line)
+        elif command.name == "perm_rules":
+            for line in permission_rule_summary(self._perm_ctx):
+                self._append_system_info(line)
+        elif command.name == "perm_clear":
+            scope = str(command.args.get("scope", "session")).strip().lower()
+            if scope not in {"session", "workspace", "all"}:
+                self._append_system_error("Usage: /perm-clear [session|workspace|all]")
+            else:
+                removed_session, removed_workspace = clear_permission_rules(
+                    self._perm_ctx,
+                    scope=scope,
+                )
+                self._append_system_info(
+                    "Permission rules cleared:"
+                    f" session={removed_session} workspace={removed_workspace}"
+                )
         elif command.name == "sessions":
             for line in format_session_lines(limit=10):
                 self._append_system_info(line)
@@ -1332,9 +1607,11 @@ class AgentScreen(Screen):
                 self._selected_task_id = task_id
                 self._append_system_info(self._subagent_service.get_task_text(task_id))
                 self._update_task_widgets()
+                self._persist_session_runtime_state()
         elif command.name == "task_close":
             self._selected_task_id = None
             self._update_task_widgets()
+            self._persist_session_runtime_state()
         elif command.name == "task_stop":
             task_id = str(command.args.get("task_id", "")).strip()
             if not task_id:
@@ -1347,6 +1624,7 @@ class AgentScreen(Screen):
                     self._selected_task_id = None
                 self._update_task_widgets()
                 self._update_statusbar()
+                self._persist_session_runtime_state(force=True)
         elif command.name == "task_stop_all":
             if self._subagent_service is None:
                 self._append_system_info("Subagent service is not ready.")
@@ -1355,6 +1633,7 @@ class AgentScreen(Screen):
                 self._selected_task_id = None
                 self._update_task_widgets()
                 self._update_statusbar()
+                self._persist_session_runtime_state(force=True)
         elif command.name == "task_copy":
             if not self._selected_task_id:
                 self._append_system_error("Usage: /task <task_id> 先选中任务，再执行 /task-copy")
@@ -1385,35 +1664,7 @@ class AgentScreen(Screen):
             if not session_id:
                 self._append_system_error("Usage: /resume <session_id>")
                 return
-            try:
-                resumed = resume_session(session_id)
-            except FileNotFoundError:
-                self._append_system_error(f"Session not found: {session_id}")
-                return
-            self._turns = self._messages_to_turns(resumed.messages)
-            self._current_turn = None
-            self._current_turn_has_live_thinking = False
-            self._resume_messages = resumed.messages
-            if self._transcript_writer is not None:
-                self._transcript_writer.close()
-            self._sticky_follow = True
-            self._session_id = resumed.session_id
-            self._transcript_writer = resumed.transcript_writer
-            self._subagent_service = get_or_create_service(
-                self._session_id,
-                event_loop=asyncio.get_running_loop(),
-            )
-            self._pending_paste_text = ""
-            self._showing_paste_summary = False
-            model_name = self._model.model_name if self._model is not None else "(loading)"
-            self.sub_title = (
-                f"model: {model_name}"
-                f"  cwd: {os.getcwd()}"
-                f"  session: {self._session_id}"
-            )
-            self._refresh_history()
-            self._update_composer_meta(f"已恢复 session {resumed.session_id}，可以继续当前上下文。")
-            self._append_system_info(f"Resumed session: {resumed.session_id}")
+            self._resume_into_current_view(session_id)
         elif command.name == "detail":
             turn_id = command.args.get("turn_id")
             self._expand_detail(turn_id)
@@ -1437,8 +1688,10 @@ class AgentScreen(Screen):
                 if entry.kind == "tool_pair" and entry.tool_result:
                     if set_turn_tool_result_collapsed(turn, entry.tool_call_id, False):
                         self._refresh_history()
+                        self._persist_session_runtime_state()
                         return
                     self._refresh_history()
+                    self._persist_session_runtime_state()
                     return
         self._append_system_info("No tool result to expand.")
 
@@ -1460,6 +1713,7 @@ class AgentScreen(Screen):
             changed = changed or before
         if changed:
             self._refresh_history()
+            self._persist_session_runtime_state()
 
     def _messages_to_turns(self, messages: list[BaseMessage]) -> list[TurnBlock]:
         turns: list[TurnBlock] = []

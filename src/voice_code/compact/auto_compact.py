@@ -14,16 +14,21 @@ from voice_code.compact.token_count import rough_token_count_for_messages
 logger = logging.getLogger(__name__)
 
 CONTEXT_WINDOW = 200_000
-COMPACT_BUFFER = 20_000 + 13_000  # max_output + auto buffer
-AUTO_COMPACT_THRESHOLD = CONTEXT_WINDOW - COMPACT_BUFFER  # 167_000
+AUTO_COMPACT_THRESHOLD = CONTEXT_WINDOW - 50000
 COMPACT_MAX_OUTPUT_TOKENS = 20_000
-MAX_CONSECUTIVE_FAILURES = 3
+MAX_CONSECUTIVE_FAILURES = 5
 
 
 def should_auto_compact(messages: list[BaseMessage]) -> bool:
     """检查是否应该触发自动压缩。"""
     tokens = rough_token_count_for_messages(messages)
-    return tokens >= AUTO_COMPACT_THRESHOLD
+    result = tokens >= AUTO_COMPACT_THRESHOLD
+    if result:
+        logger.info(
+            "AutoCompact trigger: %d tokens >= %d threshold",
+            tokens, AUTO_COMPACT_THRESHOLD,
+        )
+    return result
 
 
 def _messages_to_text(messages: list[BaseMessage]) -> str:

@@ -5,8 +5,8 @@ from __future__ import annotations
 from voice_code.tui import TurnBlock, TurnEntry
 from voice_code.tui_message_tree import (
     build_tui_rows_for_turn,
-    set_turn_streaming_text,
     set_latest_bash_result_expanded,
+    set_turn_streaming_text,
 )
 
 
@@ -67,3 +67,26 @@ def test_set_turn_streaming_text_finalizes_and_merges_live_entry():
     assert [(entry.kind, entry.text, entry.is_live) for entry in turn.entries] == [
         ("text", "final answer", False),
     ]
+
+
+def test_build_tui_rows_for_turn_does_not_duplicate_expanded_tool_result():
+    turn = TurnBlock(
+        turn_id=1,
+        user_input="read memory",
+        entries=[
+            TurnEntry(
+                kind="tool_pair",
+                tool_name="read",
+                tool_call_id="tool-1",
+                tool_result="line 1\nline 2",
+                tool_result_preview="line 1",
+                is_result_collapsed=False,
+            )
+        ],
+        status="completed",
+    )
+
+    rows = build_tui_rows_for_turn(turn)
+
+    assert [row.kind for row in rows] == ["user_input", "assistant_tool_use"]
+    assert rows[1].tool_result == "line 1\nline 2"

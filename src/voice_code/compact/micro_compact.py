@@ -10,10 +10,10 @@ from voice_code.compact.token_count import rough_token_count_for_messages
 
 logger = logging.getLogger(__name__)
 
-_KEEP_RECENT = 12
+_KEEP_RECENT = 10
 _CLEARED_TEXT = "[Old tool output cleared]"
 
-    # Tool result types eligible for clearing
+# 可被清除的工具结果类型（cc-haha 模式）
 _CLEARABLE_TOOLS = frozenset({
     "read", "glob", "grep", "bash",
     "edit", "write",
@@ -31,7 +31,7 @@ def apply_micro_compact(
 ) -> tuple[list[BaseMessage], int]:
     """清除旧的工具结果，保留最近 keep_recent 个。
 
-    Find all ToolMessages, keep last N, replace others with placeholder text.
+    参考 cc-haha: 找到所有 ToolMessage，保留最后 N 个，其余内容替换为占位文本。
     只处理最后一条用户消息之前的工具结果。
     """
     # 找到最后一条 HumanMessage 的位置
@@ -52,6 +52,8 @@ def apply_micro_compact(
 
     if len(tool_indices) <= keep_recent:
         return messages, 0
+
+    logger.debug("MicroCompact: %d tool results found, keeping %d", len(tool_indices), keep_recent)
 
     tokens_freed = 0
 

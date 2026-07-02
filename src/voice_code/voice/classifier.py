@@ -14,7 +14,7 @@ from voice_code.voice.types import (
 logger = logging.getLogger(__name__)
 
 # 精确控制短语（完整匹配才算控制命令）
-_EXACT_CONTROL_PHRASES: set[str] = {"状态", "休眠", "继续"}
+_EXACT_CONTROL_PHRASES: set[str] = {"状态", "休眠", "继续", "暂停"}
 
 _GATEKEEPER_PROMPT = """判断用户是否在对AI说话。只回复 yes 或 no。
 
@@ -40,6 +40,11 @@ class CommandClassifier:
         """分类 STT 文本。"""
         cleaned = text.strip()
         if not cleaned:
+            return CommandDecision(kind=CommandKind.IGNORE, text=cleaned)
+
+        # Layer 0: heuristic ignore for noise
+        if self._is_noise(cleaned):
+            logger.info("Classifier: heuristic ignore: %s", cleaned)
             return CommandDecision(kind=CommandKind.IGNORE, text=cleaned)
 
         # Layer 1: keyword matching for control commands
@@ -76,6 +81,25 @@ class CommandClassifier:
         # Fallback: no model available
         logger.info("Classifier: no model, defaulting to agent_command")
         return CommandDecision(kind=CommandKind.AGENT_COMMAND, text=cleaned)
+
+    @staticmethod
+    def _is_noise(text: str) -> bool:
+        cleaned = text.strip()
+        if len(cleaned) <= 1:
+            return True
+        if all(c in "...,.。。。!！?？~～" for c in cleaned):
+            return True
+        noise_patterns = {
+            "嗯", "哦", "啊", "哈", "呃", "哎",
+            "嗯嗯", "哦哦", "啊啊", "哈哈",
+            "啊对对对", "好吧", "行吧", "好的吧",
+            "嗯嗯嗯", "哦哦哦",
+        }
+        if cleaned in noise_patterns:
+            return True
+        if all(c in ".,，。！!?？~～、…" for c in cleaned):
+            return True
+        return False
 
     async def _classify_with_llm(self, text: str) -> CommandKind:
         """门禁 LLM 判断用户是否在对 AI 说话。"""

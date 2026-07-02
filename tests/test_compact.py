@@ -47,7 +47,7 @@ def test_micro_compact_no_effect():
 def test_micro_compact_default_keeps_more_recent_tool_results():
     """默认配置应尽量保留更多最近工具输出，减少“失忆感”."""
     messages = [SystemMessage(content="sys")]
-    for i in range(12):
+    for i in range(10):
         messages.append(ToolMessage(content=f"result {i}", tool_call_id=str(i)))
     messages.append(HumanMessage(content="last user"))
 
@@ -246,6 +246,22 @@ def test_context_collapse_preserves_write_turns():
         HumanMessage(content="u1"),
         AIMessage(content="editing", tool_calls=[{"name": "edit", "args": {}, "id": "1"}]),
         ToolMessage(content="edited", tool_call_id="1"),
+        HumanMessage(content="u2"),
+        AIMessage(content="recent", tool_calls=[{"name": "read", "args": {}, "id": "2"}]),
+        ToolMessage(content="recent file", tool_call_id="2"),
+    ]
+    result, stats = collapse_old_turns(messages, min_turns_before_collapse=1)
+    assert any(isinstance(m, ToolMessage) and m.tool_call_id == "1" for m in result)
+    assert stats.active is False
+
+
+def test_context_collapse_agent_is_write_like():
+    """agent 工具调用视为写类操作，对应 turn 不被折叠。"""
+    messages = [
+        SystemMessage(content="sys"),
+        HumanMessage(content="u1"),
+        AIMessage(content="delegating", tool_calls=[{"name": "agent", "args": {}, "id": "1"}]),
+        ToolMessage(content="agent done", tool_call_id="1"),
         HumanMessage(content="u2"),
         AIMessage(content="recent", tool_calls=[{"name": "read", "args": {}, "id": "2"}]),
         ToolMessage(content="recent file", tool_call_id="2"),

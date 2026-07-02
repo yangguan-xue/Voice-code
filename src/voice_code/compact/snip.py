@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import logging
+
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
 from voice_code.compact.stats import CompactionStats
 from voice_code.compact.token_count import rough_token_count_for_messages
 from voice_code.compact.turn_split import split_into_turns
+
+logger = logging.getLogger(__name__)
 
 _SNIP_BOUNDARY_PREFIX = "[SNIP:"
 
@@ -46,7 +50,7 @@ def _cleanup_orphaned_tool_calls(
 
 def snip_compact(
     messages: list[BaseMessage],
-    keep_recent_turns: int = 3,
+    keep_recent_turns: int = 5,
 ) -> tuple[list[BaseMessage], CompactionStats]:
     """删除旧轮次的 ToolMessage，同时清理对应 AIMessage 中的 tool_call 引用。"""
     if keep_recent_turns <= 0:
@@ -57,6 +61,10 @@ def snip_compact(
         return messages, CompactionStats(layer="snip")
 
     if len(turns) <= keep_recent_turns:
+        logger.debug(
+            "Snip: %d turns <= keep_recent_turns=%d, skipping",
+            len(turns), keep_recent_turns,
+        )
         return messages, CompactionStats(layer="snip")
 
     index_lookup = {id(msg): idx for idx, msg in enumerate(messages)}
@@ -74,6 +82,11 @@ def snip_compact(
 
     if not remove_indices:
         return messages, CompactionStats(layer="snip")
+
+    logger.debug(
+        "Snip: removing %d tool messages from %d old turns, freeing ~%d tokens",
+        len(remove_indices), len(old_turns), tokens_freed,
+    )
 
     remove_set = set(remove_indices)
     boundary_index = min(remove_indices)
