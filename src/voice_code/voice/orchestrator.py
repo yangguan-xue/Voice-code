@@ -27,6 +27,7 @@ from voice_code.voice.types import (
     AGENT_FAILED_TEXT,
     CHANNELS,
     IDLE_TIMEOUT_SECONDS,
+    PAUSE_CONFIRM_TEXT,
     SAMPLE_RATE,
     SLEEP_CONFIRM_TEXT,
     STATUS_TEXT_MAP,
@@ -262,6 +263,13 @@ class VoiceOrchestrator:
         with self._wake_lock:
             self._wake_buf = bytearray()
 
+    async def _enter_paused(self) -> None:
+        await self._transition_to(VoiceState.PAUSED, "pause_command")
+        self._recorder.close_mic()
+        self._wake_triggered = False
+        with self._wake_lock:
+            self._wake_buf = bytearray()
+
     async def _enter_listening(self) -> None:
         # 开麦
         self._recorder.open_mic()
@@ -301,6 +309,10 @@ class VoiceOrchestrator:
         elif control_name == "sleep":
             await self._speak(SLEEP_CONFIRM_TEXT)
             await self._enter_sleeping()
+
+        elif control_name == "pause":
+            await self._speak(PAUSE_CONFIRM_TEXT)
+            await self._enter_paused()
 
         elif control_name == "keep_alive":
             self._reset_idle_timer()

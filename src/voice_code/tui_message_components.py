@@ -17,14 +17,16 @@ from rich.syntax import Syntax
 from rich.text import Text
 
 from voice_code.theme import (
+    ACCENT_BLUE,
+    ACCENT_GREEN,
+    ACCENT_PEACH,
+    ACCENT_RED,
     BG_CODE,
     BG_SECONDARY,
     BG_SURFACE,
     BORDER_PRIMARY,
-    BORDER_SECONDARY,
     CODE_THEME,
     TEXT_DIM,
-    TEXT_PRIMARY,
     TEXT_SECONDARY,
     TOOL_COLORS,
 )
@@ -34,13 +36,15 @@ CODE_INFO_STYLE = f"dim {TEXT_DIM}"
 TEXT_DIM_STYLE = "dim"
 CODE_LANG_STYLE = f"bold {TEXT_SECONDARY}"
 CODE_BACKGROUND = BG_CODE
-ASSISTANT_PANEL_BORDER = BORDER_SECONDARY
-ASSISTANT_PANEL_BG = BG_SECONDARY
-ASSISTANT_TITLE_STYLE = f"bold {TEXT_PRIMARY}"
-TOOL_PANEL_BG = BG_SURFACE
+ASSISTANT_PANEL_BORDER = BORDER_PRIMARY
+ASSISTANT_PANEL_BG = BG_SURFACE
+ASSISTANT_TITLE_STYLE = f"bold {ACCENT_RED}"
+TOOL_PANEL_BG = BG_SECONDARY
 TOOL_PANEL_BORDER = BORDER_PRIMARY
-THINKING_PANEL_BORDER = BORDER_SECONDARY
-THINKING_PANEL_BG = BG_SURFACE
+THINKING_PANEL_BORDER = BORDER_PRIMARY
+THINKING_PANEL_BG = BG_SECONDARY
+PRIMARY_TOOL_ARG_KEYS = ("command", "pattern", "file_path", "path", "query", "url")
+SECONDARY_TOOL_ARG_KEYS = ("cwd", "recursive", "limit", "offset")
 
 
 @dataclass
@@ -97,6 +101,47 @@ def _append_wrapped_lines(
         rendered.append(f"{prefix}{line}\n", style=style)
 
 
+def _format_tool_arg_value(value: object, limit: int = 72) -> str:
+    rendered = repr(value)
+    if len(rendered) <= limit:
+        return rendered
+    head = max(20, limit // 2)
+    tail = max(16, limit - head - 1)
+    return f"{rendered[:head]}…{rendered[-tail:]}"
+
+
+def _summarize_tool_args(tool_args: dict[str, object], *, limit: int = 2) -> str:
+    if not tool_args:
+        return ""
+
+    ordered_keys: list[str] = []
+    for key in PRIMARY_TOOL_ARG_KEYS:
+        if key in tool_args and key not in ordered_keys:
+            ordered_keys.append(key)
+    for key in SECONDARY_TOOL_ARG_KEYS:
+        if key in tool_args and key not in ordered_keys:
+            ordered_keys.append(key)
+    for key in tool_args:
+        if key not in ordered_keys:
+            ordered_keys.append(key)
+
+    selected: list[str] = []
+    for key in ordered_keys:
+        if key in {"path", "cwd"} and any(
+            k in tool_args for k in ("command", "pattern", "file_path", "query", "url")
+        ):
+            continue
+        selected.append(f"{key}={_format_tool_arg_value(tool_args[key])}")
+        if len(selected) >= limit:
+            break
+
+    remaining = max(0, len(tool_args) - len(selected))
+    summary = ", ".join(selected)
+    if remaining:
+        summary += f"  +{remaining} more"
+    return summary
+
+
 class AssistantTextMessage:
     def __init__(self, text: str) -> None:
         self.text = text
@@ -110,7 +155,7 @@ class AssistantTextMessage:
             ),
             border_style=ASSISTANT_PANEL_BORDER,
             style=f"on {ASSISTANT_PANEL_BG}",
-            padding=(0, 0),
+            padding=(1, 1),
             title=Text(" assistant ", style=ASSISTANT_TITLE_STYLE),
             title_align="left",
             expand=True,
@@ -123,8 +168,8 @@ class AssistantThinkingMessage:
 
     def render(self) -> Panel:
         return Panel(
-            Text(self.text, style="dim"),
-            title=Text(" thinking ", style="bold #666666"),
+            Text(self.text, style=f"dim {TEXT_DIM}"),
+            title=Text(" thinking ", style=f"dim {ACCENT_RED}"),
             border_style=THINKING_PANEL_BORDER,
             style=f"on {THINKING_PANEL_BG}",
             padding=(0, 1),
@@ -170,74 +215,54 @@ class ToolUseMessage:
 
     def render(self) -> Panel:
         entry = self.entry
-        args = ", ".join(f"{k}={repr(v)[:40]}" for k, v in entry.tool_args.items())
-        if entry.tool_result and entry.is_result_collapsed:
-            hint = " [> /detail]"
-        elif entry.tool_result:
-            hint = " [v /collapse]"
-        else:
-            hint = " [... running]"
-
-        body: list[RenderableType] = []
-        title = Text()
+        args = _summarize_tool_args(entry.tool_args)
         has_error = "<tool_use_error>" in entry.tool_result
         is_running = not entry.tool_result
         is_expanded = bool(entry.tool_result and not entry.is_result_collapsed)
-        if has_error:
-            state_text = "error"
-            state_style = "bold red"
-            border_style = "red"
-        elif is_running:
-            state_text = "running"
-            state_style = "bold #ffaa00"
-            border_style = "#ffaa00"
-        elif is_expanded:
-            state_text = "expanded"
-            state_style = "bold #33cc33"
-            border_style = "#33cc33"
-        else:
-            state_text = "collapsed"
-            state_style = "bold #666666"
-            border_style = TOOL_PANEL_BORDER
 
-        chevron = "v" if is_expanded else ">" if entry.tool_result else "*"
-        title.append(f"{chevron} ", style=state_style)
-        title.append("* ", style=TOOL_COLORS.get(entry.tool_name, "bold #ffaa00"))
-        title.append(entry.tool_name, style=TOOL_COLORS.get(entry.tool_name, "bold #ffaa00"))
-        title.append(f"  {state_text}", style=state_style)
+        if has_error:
+            state_chip = ("×", ACCENT_RED)
+            border_style = ACCENT_RED
+        elif is_running:
+            state_chip = ("●", ACCENT_BLUE)
+            border_style = BORDER_PRIMARY
+        elif is_expanded:
+            state_chip = ("▾", ACCENT_GREEN)
+            border_style = BORDER_PRIMARY
+        elif entry.tool_result:
+            state_chip = ("▸", TEXT_DIM)
+            border_style = BORDER_PRIMARY
+        else:
+            state_chip = ("•", TEXT_DIM)
+            border_style = BORDER_PRIMARY
+
+        title = Text()
+        title.append(f"{state_chip[0]} ", style=f"bold {state_chip[1]}")
+        title.append("tool ", style=f"dim {TEXT_DIM}")
+        tool_style = TOOL_COLORS.get(entry.tool_name, f"bold {ACCENT_PEACH}")
+        title.append(entry.tool_name, style=tool_style)
         if args:
             title.append(f"  {args}", style="dim")
 
-        summary = Text(style="dim")
+        body: list[RenderableType] = []
         if has_error:
-            summary.append("tool error", style="bold red")
+            body.append(Text("tool error", style=f"bold {ACCENT_RED}"))
         elif is_running:
-            summary.append("waiting for result")
-        elif entry.tool_result_preview:
-            preview = entry.tool_result_preview.strip().replace("\n", " ")
-            summary.append(preview[:120] + ("..." if len(preview) > 120 else ""))
-        elif entry.tool_result:
-            summary.append("result available")
-
-        if summary.plain:
-            body.append(summary)
-            if entry.tool_result and not entry.is_result_collapsed:
-                body.append(Text(""))
-
-        if entry.tool_result and not entry.is_result_collapsed:
+            body.append(Text("running…", style=f"italic {TEXT_DIM}"))
+        elif entry.is_result_collapsed:
+            raw = entry.tool_result_preview or entry.tool_result[:120]
+            preview = raw.strip().replace("\n", " ")
+            body.append(Text(preview[:120], style=TEXT_DIM))
+        else:
             detail_lines = "\n".join(entry.tool_result.split("\n")[:20])
             if entry.tool_result.lstrip().startswith(("#", "-", "*", "```")):
                 body.append(Markdown(detail_lines, code_theme=CODE_THEME))
             else:
                 body.extend(render_content_blocks(detail_lines, text_style=TEXT_DIM_STYLE))
-        elif not summary.plain:
-            body.append(Text("running...", style="dim"))
 
         return Panel(
-            Group(*body),
+            Group(*body) if body else Text(""),
             title=title,
-            subtitle=hint.strip(),
-            subtitle_align="right",
             border_style=border_style,
             style=f"on {TOOL_PANEL_BG}",
             padding=(0, 1),

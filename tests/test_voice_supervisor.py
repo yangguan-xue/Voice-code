@@ -11,7 +11,6 @@ from langchain_core.tools import tool
 from voice_code.voice.command_assistant import CommandAssistant
 from voice_code.voice.orchestrator import VoiceOrchestrator
 from voice_code.voice.types import (
-    SUPERVISOR_FAILED_TEXT,
     CommandDecision,
     CommandKind,
     SupervisorAction,
@@ -47,6 +46,10 @@ class _FakeBridge:
     def __init__(self, results: list[str]) -> None:
         self.calls: list[str] = []
         self._results = results
+        self._event_callback = None
+
+    def on_event(self, callback) -> None:
+        self._event_callback = callback
 
     async def start(self) -> None:
         return None
@@ -68,6 +71,12 @@ class _FakeBridge:
 class _FakeTtsClient:
     def __init__(self) -> None:
         self.texts: list[str] = []
+
+    def synthesize_stream(
+        self, text: str, seed: int = 1, cfg_value: float = 2.0, inference_timesteps: int = 10
+    ) -> bytes:
+        self.texts.append(text)
+        return _dummy_wav_bytes()
 
     async def synthesize_text(self, text: str, seed: int | None = None) -> bytes:
         self.texts.append(text)
@@ -362,7 +371,7 @@ async def test_orchestrator_dispatch_limit_fails_cleanly() -> None:
     await orchestrator.handle_speech_segment(_dummy_wav_bytes())
 
     assert bridge.calls == ["任务一", "继续任务", "继续任务"]
-    assert tts.texts[-1] == SUPERVISOR_FAILED_TEXT
+    assert tts.texts[-1] == "哥哥，连续执行次数太多了，先停一下，麻烦你重新说。"
 
 
 @pytest.mark.asyncio

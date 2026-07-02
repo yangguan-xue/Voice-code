@@ -1,4 +1,4 @@
-"""Compact prompt templates."""
+"""Compact prompt 模板 — 参考 cc-haha prompts.ts"""
 
 from __future__ import annotations
 
@@ -44,8 +44,27 @@ Wrap your final summary in <summary> tags. Example structure:
 The conversation to summarize is below."""
 
 
+_FAST_COMPACT_PROMPT = """\
+You are a helpful AI assistant tasked with summarizing conversations.
+
+CRITICAL: Respond with text ONLY. Do NOT call any tools. Do NOT output any tool calls.
+
+Create a concise summary of the conversation, capturing:
+1. The user's primary request and intent
+2. Key technical decisions and code patterns
+3. Files modified and why
+4. Errors encountered and how they were resolved
+5. Pending tasks and next steps
+
+Wrap your summary in <summary> tags. The conversation to summarize is below."""
+
+
 def get_compact_prompt() -> str:
     return _COMPACT_PROMPT
+
+
+def get_fast_compact_prompt() -> str:
+    return _FAST_COMPACT_PROMPT
 
 
 def format_compact_summary(raw_response: str) -> str:

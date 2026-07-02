@@ -17,6 +17,7 @@ class VoiceState(StrEnum):
     LISTENING = "listening"
     WORKING = "working"
     SPEAKING = "speaking"
+    PAUSED = "paused"
 
 
 class CommandKind(StrEnum):
@@ -95,6 +96,7 @@ STATUS_TEXT_MAP: dict[VoiceState, str] = {
     VoiceState.LISTENING: "我在听",
     VoiceState.WORKING: "我正在处理刚才的任务",
     VoiceState.SPEAKING: "我正在播报结果",
+    VoiceState.PAUSED: "我已暂停",
 }
 
 ALLOWED_CONTROL_NAMES: set[str] = {
@@ -103,6 +105,7 @@ ALLOWED_CONTROL_NAMES: set[str] = {
     "report_status",
     "sleep",
     "keep_alive",
+    "pause",
 }
 
 CONTROL_KEYWORDS: dict[str, str] = {
@@ -111,6 +114,7 @@ CONTROL_KEYWORDS: dict[str, str] = {
     "状态": "report_status",
     "休眠": "sleep",
     "继续": "keep_alive",
+    "暂停": "pause",
 }
 
 SAMPLE_RATE = 16000
@@ -132,6 +136,7 @@ SUPERVISOR_MAX_REVIEWS = 4
 SUPERVISOR_MAX_TURN_SECONDS = 120.0
 WAKE_CONFIRM_TEXT = "我在"
 SLEEP_CONFIRM_TEXT = "已休眠，叫我名字可唤醒"
+PAUSE_CONFIRM_TEXT = "已暂停，叫我名字可继续"
 STT_NOT_CLEAR_TEXT = "没听清，请再说一遍"
 AGENT_FAILED_TEXT = "任务执行失败，请换个说法"
 SUPERVISOR_FAILED_TEXT = "哥哥，我这轮没能稳定完成，麻烦你换个说法或者补一点信息。"

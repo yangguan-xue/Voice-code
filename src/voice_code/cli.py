@@ -20,9 +20,16 @@ from voice_code.commands import (
     resume_session,
 )
 from voice_code.llm.models import list_model_profiles
-from voice_code.memory.service import MemoryService
-from voice_code.permissions import PermissionContext
+from voice_code.permissions import (
+    PermissionContext,
+    clear_permission_rules,
+    export_permission_state,
+    load_session_rules_from_state,
+    load_workspace_rules,
+    permission_rule_summary,
+)
 from voice_code.runtime import bootstrap_runtime
+from voice_code.session import load_session_state, save_session_state
 from voice_code.tui import main as tui_main
 
 logger = logging.getLogger(__name__)
@@ -104,9 +111,24 @@ async def run_repl(args: argparse.Namespace) -> None:
     tools = runtime.tools
     cwd = runtime.cwd
     prompt = runtime.prompt
-    perm_ctx = PermissionContext(mode=args.permission_mode)
+    perm_ctx = PermissionContext(
+        mode=args.permission_mode,
+        workspace_root=cwd,
+        workspace_rules=load_workspace_rules(cwd),
+    )
+    state_result = load_session_state(runtime.session_id, fallback_cwd=cwd)
+    perm_ctx.session_rules = load_session_rules_from_state(state_result.state.permission_state)
+    current_state = state_result.state
+
+    def _persist_permission_state(ctx: PermissionContext) -> None:
+        nonlocal current_state, current_session_id
+        current_state.session_id = current_session_id
+        current_state.cwd = cwd
+        current_state.permission_state = dict(export_permission_state(ctx))
+        save_session_state(current_state)
+
+    perm_ctx.on_change = _persist_permission_state
     abort_sig = AbortSignal()
-    memory_service = MemoryService(project_root=cwd)
     resume_messages: list[BaseMessage] | None = None
     current_session_id = runtime.session_id
     transcript_writer = runtime.transcript_writer
@@ -166,14 +188,40 @@ async def run_repl(args: argparse.Namespace) -> None:
                 transcript_writer.close()
                 current_session_id = resumed.session_id
                 transcript_writer = resumed.transcript_writer
+                current_state = resumed.runtime_state
+                perm_ctx.session_id = resumed.session_id
+                perm_ctx.session_rules = load_session_rules_from_state(
+                    resumed.runtime_state.permission_state
+                )
                 print(f"Resumed session: {resumed.session_id}")
+                continue
+            elif command.name == "perm":
+                for line in permission_rule_summary(perm_ctx):
+                    print(line)
+                continue
+            elif command.name == "perm_rules":
+                for line in permission_rule_summary(perm_ctx):
+                    print(line)
+                continue
+            elif command.name == "perm_clear":
+                scope = str(command.args.get("scope", "session")).strip().lower()
+                if scope not in {"session", "workspace", "all"}:
+                    print("Usage: /perm-clear [session|workspace|all]")
+                    continue
+                removed_session, removed_workspace = clear_permission_rules(
+                    perm_ctx,
+                    scope=scope,
+                )
+                print(
+                    "Permission rules cleared:"
+                    f" session={removed_session} workspace={removed_workspace}"
+                )
                 continue
             else:
                 print(f"Unknown command: {user_input}")
                 continue
 
         abort_sig.clear()
-        memory_msgs = memory_service.get_memory_messages(query=user_input, limit=5)
         async for event in agent_loop(
             user_input=user_input,
             tools=tools,
@@ -184,7 +232,6 @@ async def run_repl(args: argparse.Namespace) -> None:
             resume_messages=resume_messages,
             transcript_writer=transcript_writer,
             fallback_model=fallback_model,
-            memory_messages=memory_msgs,
         ):
             _display_event(event)
         resume_messages = transcript_writer.read_all_messages()

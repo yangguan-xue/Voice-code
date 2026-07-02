@@ -31,7 +31,7 @@ from voice_code.subagents.runtime import (
     SubagentRuntime,
     SubagentRuntimeRequest,
 )
-from voice_code.subagents.types import AgentTask, TaskStatus
+from voice_code.subagents.types import AgentTask, TaskProgress, TaskStatus
 
 
 @dataclass(slots=True)
@@ -54,6 +54,27 @@ class TaskNotification:
                 f"transcript_path: {self.transcript_path}\n"
                 "</task_notification>"
             )
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "task_id": self.task_id,
+            "session_id": self.session_id,
+            "agent_type": self.agent_type,
+            "status": str(self.status),
+            "summary": self.summary,
+            "transcript_path": self.transcript_path,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any], *, session_id: str) -> TaskNotification:
+        return cls(
+            task_id=str(payload.get("task_id", "")).strip(),
+            session_id=session_id,
+            agent_type=str(payload.get("agent_type", "")).strip() or "unknown",
+            status=TaskStatus(str(payload.get("status", TaskStatus.FAILED))),
+            summary=str(payload.get("summary", "")),
+            transcript_path=str(payload.get("transcript_path", "")),
         )
 
 
@@ -138,6 +159,39 @@ class SubagentService:
 
     def bind_event_loop(self, event_loop: asyncio.AbstractEventLoop) -> None:
         self._event_loop = event_loop
+
+    def has_runtime_state(self) -> bool:
+        return bool(self.list_tasks() or self._notifications or self._background_tasks)
+
+    def export_task_state(self) -> dict[str, Any]:
+        return {
+            "tasks": [_task_to_dict(task) for task in self.list_tasks()],
+        }
+
+    def export_notifications_state(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [notification.to_dict() for notification in self._notifications]
+
+    def restore_runtime_state(
+        self,
+        *,
+        task_state: dict[str, Any] | None = None,
+        notifications: list[dict[str, Any]] | None = None,
+    ) -> None:
+        if self.has_runtime_state():
+            return
+        restored_tasks = [
+            _task_from_dict(payload, session_id=self._session_id)
+            for payload in list((task_state or {}).get("tasks", []) or [])
+            if isinstance(payload, dict)
+        ]
+        self._registry.restore_tasks(restored_tasks)
+        with self._lock:
+            self._notifications = [
+                TaskNotification.from_dict(payload, session_id=self._session_id)
+                for payload in list(notifications or [])
+                if isinstance(payload, dict)
+            ]
 
     def invoke_agent_tool(self, request: AgentToolRequest) -> str:
         context = get_current_runtime_context()
@@ -304,6 +358,11 @@ class SubagentService:
             task_id=task_id,
             agent_type=agent_type,
             parent_session_id=context.session_id,
+            workspace_root=context.permission_context.workspace_root,
+            workspace_rules=context.permission_context.workspace_rules,
+            session_rules=context.permission_context.session_rules,
+            runtime_rules=context.permission_context.runtime_rules,
+            on_change=context.permission_context.on_change,
         )
 
         return SubagentRuntimeRequest(
@@ -355,3 +414,84 @@ class SubagentService:
                 f"transcript_path: {result.transcript_path}",
             ]
         )
+
+
+def _progress_to_dict(progress: TaskProgress | None) -> dict[str, Any] | None:
+    if progress is None:
+        return None
+    return {
+        "tool_use_count": progress.tool_use_count,
+        "token_count": progress.token_count,
+        "last_activity": progress.last_activity,
+        "summary": progress.summary,
+    }
+
+
+def _progress_from_dict(payload: dict[str, Any] | None) -> TaskProgress | None:
+    if not payload:
+        return None
+    return TaskProgress(
+        tool_use_count=int(payload.get("tool_use_count", 0) or 0),
+        token_count=int(payload.get("token_count", 0) or 0),
+        last_activity=str(payload.get("last_activity", "")),
+        summary=str(payload.get("summary", "")),
+    )
+
+
+def _task_to_dict(task: AgentTask) -> dict[str, Any]:
+    return {
+        "task_id": task.task_id,
+        "session_id": task.session_id,
+        "parent_task_id": task.parent_task_id,
+        "parent_session_id": task.parent_session_id,
+        "agent_type": task.agent_type,
+        "description": task.description,
+        "prompt": task.prompt,
+        "status": str(task.status),
+        "model_name": task.model_name,
+        "transcript_path": task.transcript_path,
+        "created_at": task.created_at,
+        "started_at": task.started_at,
+        "finished_at": task.finished_at,
+        "progress": _progress_to_dict(task.progress),
+        "result_summary": task.result_summary,
+        "error": task.error,
+        "stop_requested": task.stop_requested,
+    }
+
+
+def _restored_task_status(status: TaskStatus) -> TaskStatus:
+    if status in {TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.WAITING_PERMISSION}:
+        return TaskStatus.CANCELLED
+    return status
+
+
+def _task_from_dict(payload: dict[str, Any], *, session_id: str) -> AgentTask:
+    raw_status = TaskStatus(str(payload.get("status", TaskStatus.PENDING)))
+    status = _restored_task_status(raw_status)
+    error = str(payload.get("error", "") or "")
+    if raw_status != status and not error:
+        error = "interrupted before session resume"
+    return AgentTask(
+        task_id=str(payload.get("task_id", "")).strip(),
+        session_id=session_id,
+        parent_task_id=str(payload.get("parent_task_id", "")).strip() or None,
+        parent_session_id=str(payload.get("parent_session_id", "")).strip() or None,
+        agent_type=str(payload.get("agent_type", "")).strip() or "unknown",
+        description=str(payload.get("description", "")),
+        prompt=str(payload.get("prompt", "")),
+        status=status,
+        model_name=str(payload.get("model_name", "")).strip() or None,
+        transcript_path=str(payload.get("transcript_path", "")),
+        created_at=float(payload.get("created_at", 0.0) or 0.0),
+        started_at=float(payload.get("started_at", 0.0)) if payload.get("started_at") else None,
+        finished_at=(
+            float(payload.get("finished_at", 0.0))
+            if payload.get("finished_at")
+            else None
+        ),
+        progress=_progress_from_dict(payload.get("progress")),
+        result_summary=str(payload.get("result_summary", "") or "") or None,
+        error=error or None,
+        stop_requested=bool(payload.get("stop_requested", False)),
+    )

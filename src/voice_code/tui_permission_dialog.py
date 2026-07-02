@@ -90,8 +90,18 @@ class PermissionDialog(ModalScreen[PermissionDecision]):
 
         meta = Text()
         meta.append("这次操作需要明确审批。", style="bold #e0e0e0")
-        if self.request.reason:
+        reason_chunks: list[str] = []
+        if self.request.reason_type:
+            reason_chunks.append(self.request.reason_type)
+        if self.request.risk_category:
+            reason_chunks.append(f"risk:{self.request.risk_category}")
+        if self.request.rule_source:
+            reason_chunks.append(f"source:{self.request.rule_source}")
+        if reason_chunks:
             meta.append("  ")
+            meta.append(" · ".join(reason_chunks), style="#999999")
+        if self.request.reason:
+            meta.append("\n")
             meta.append(self.request.reason, style="#999999")
         source = _permission_source_label(self.request)
         if source:
@@ -106,10 +116,11 @@ class PermissionDialog(ModalScreen[PermissionDecision]):
                 Button("Deny", id="deny", variant="error"),
                 Button("Allow once", id="allow", variant="primary"),
                 Button("Always allow", id="always", variant="success"),
+                Button("Trust workspace", id="workspace", variant="default"),
                 id="permission-actions",
             ),
             Static(
-                "Esc / N 拒绝  ·  Enter / Y 允许一次  ·  A 本会话始终允许",
+                "Esc / N 拒绝  ·  Enter / Y 允许一次  ·  A 本会话始终允许  ·  W 当前工作区信任",
                 id="permission-shortcuts",
             ),
             id="permission-dialog",
@@ -129,6 +140,9 @@ class PermissionDialog(ModalScreen[PermissionDecision]):
         elif key == "a":
             event.stop()
             self._allow_session()
+        elif key == "w":
+            event.stop()
+            self._allow_workspace()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "deny":
@@ -137,6 +151,8 @@ class PermissionDialog(ModalScreen[PermissionDecision]):
             self._allow_once()
         elif event.button.id == "always":
             self._allow_session()
+        elif event.button.id == "workspace":
+            self._allow_workspace()
 
     def _render_body(self) -> Panel:
         return Panel(
@@ -183,6 +199,16 @@ class PermissionDialog(ModalScreen[PermissionDecision]):
             PermissionDecision(
                 behavior=PermissionBehavior.ALLOW,
                 message="Allowed for the rest of this session.",
+                remember_scope="session",
+            )
+        )
+
+    def _allow_workspace(self) -> None:
+        self.dismiss(
+            PermissionDecision(
+                behavior=PermissionBehavior.ALLOW,
+                message="Allowed for this workspace.",
+                remember_scope="workspace",
             )
         )
 

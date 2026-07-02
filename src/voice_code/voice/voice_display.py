@@ -113,6 +113,7 @@ _STATE_ICON = {
     VoiceState.LISTENING: "🎤",
     VoiceState.WORKING: "⚙️",
     VoiceState.SPEAKING: "🔊",
+    VoiceState.PAUSED: "⏸️",
 }
 
 _STATE_COLOR = {
@@ -120,6 +121,7 @@ _STATE_COLOR = {
     VoiceState.LISTENING: _GREEN,
     VoiceState.WORKING: _YELLOW,
     VoiceState.SPEAKING: _PURPLE,
+    VoiceState.PAUSED: _CYAN,
 }
 
 _STATE_LABEL = {
@@ -127,6 +129,7 @@ _STATE_LABEL = {
     VoiceState.LISTENING: "聆听",
     VoiceState.WORKING: "执行",
     VoiceState.SPEAKING: "播报",
+    VoiceState.PAUSED: "暂停",
 }
 
 

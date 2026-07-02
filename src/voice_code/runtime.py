@@ -12,7 +12,14 @@ import voice_code.llm.models as model_config
 from voice_code.context import get_context
 from voice_code.llm.models import init_model
 from voice_code.prompts import get_system_prompt
-from voice_code.session import TranscriptWriter, get_session_path, make_session_id
+from voice_code.session import (
+    TranscriptWriter,
+    build_session_runtime_state,
+    get_session_path,
+    get_session_state_path,
+    make_session_id,
+    save_session_state,
+)
 from voice_code.tools import get_all_tools
 
 
@@ -67,7 +74,20 @@ async def bootstrap_runtime(
     )
 
     resolved_session_id = session_id or make_session_id()
-    transcript_writer = TranscriptWriter(get_session_path(resolved_session_id))
+    transcript_writer = TranscriptWriter(
+        get_session_path(resolved_session_id),
+        session_meta={"cwd": cwd},
+    )
+    state_path = get_session_state_path(resolved_session_id)
+    if not state_path.exists():
+        save_session_state(
+            build_session_runtime_state(
+                session_id=resolved_session_id,
+                cwd=cwd,
+                agent_mode="default",
+                model_name=model.model_name,
+            )
+        )
     return RuntimeBootstrap(
         model=model,
         fallback_model=fallback_model,

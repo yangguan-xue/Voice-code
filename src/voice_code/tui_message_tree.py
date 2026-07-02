@@ -254,23 +254,6 @@ def build_tui_rows_for_turn(
                     source_index=index,
                 )
             )
-            if tool_result and not is_result_collapsed:
-                rows.append(
-                    TuiRow(
-                        row_id=f"turn-{turn.turn_id}-entry-{index}-tool-result",
-                        turn_id=turn.turn_id,
-                        kind="user_tool_result",
-                        text=tool_result,
-                        tool_name=tool_name,
-                        tool_call_id=tool_call_id,
-                        tool_args=tool_args,
-                        tool_result=tool_result,
-                        tool_result_preview=tool_result_preview,
-                        is_result_collapsed=is_result_collapsed,
-                        is_streaming=is_streaming,
-                        source_index=index,
-                    )
-                )
             continue
 
     return rows
