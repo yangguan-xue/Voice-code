@@ -10,23 +10,35 @@ from langchain_openai import ChatOpenAI
 from voice_code.compact.boundary import make_compact_boundary
 from voice_code.compact.prompt import format_compact_summary, get_compact_prompt
 from voice_code.compact.token_count import rough_token_count_for_messages
+from voice_code.llm.models import get_active_context_window
 
 logger = logging.getLogger(__name__)
 
 CONTEXT_WINDOW = 200_000
-AUTO_COMPACT_THRESHOLD = CONTEXT_WINDOW - 50000
+AUTO_COMPACT_HEADROOM = 50_000
 COMPACT_MAX_OUTPUT_TOKENS = 20_000
 MAX_CONSECUTIVE_FAILURES = 5
+
+
+def auto_compact_threshold() -> int:
+    """根据当前活跃 profile 的 context window 计算压缩阈值。"""
+    return get_active_context_window(CONTEXT_WINDOW) - AUTO_COMPACT_HEADROOM
+
+
+# Backward-compatible alias; reflects the active profile at import time only when
+# no profile has been set yet. Callers should use auto_compact_threshold() instead.
+AUTO_COMPACT_THRESHOLD = CONTEXT_WINDOW - 50000
 
 
 def should_auto_compact(messages: list[BaseMessage]) -> bool:
     """检查是否应该触发自动压缩。"""
     tokens = rough_token_count_for_messages(messages)
-    result = tokens >= AUTO_COMPACT_THRESHOLD
+    threshold = auto_compact_threshold()
+    result = tokens >= threshold
     if result:
         logger.info(
-            "AutoCompact trigger: %d tokens >= %d threshold",
-            tokens, AUTO_COMPACT_THRESHOLD,
+            "AutoCompact trigger: %d tokens >= %d threshold (window=%d)",
+            tokens, threshold, get_active_context_window(CONTEXT_WINDOW),
         )
     return result
 
@@ -99,7 +111,7 @@ async def compact_conversation(
             response.content if isinstance(response.content, str) else str(response.content)
         )
     except Exception:
-        logger.exception("AutoCompact LLM call failed")
+        logger.error("AutoCompact LLM call failed")
         return messages  # 压缩失败，保持原样
 
     # 构建压缩后的消息列表

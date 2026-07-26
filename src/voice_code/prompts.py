@@ -202,12 +202,12 @@ def _section_env_info(
     return "\n".join(parts)
 
 
-def _section_claude_md(content: str) -> str:
-    """生成 CLAUDE.md 章节。"""
+def _section_project_instructions(content: str) -> str:
+    """生成 AGENTS.md 章节。"""
     if not content.strip():
         return ""
     return f"""\
-# Project Instructions (CLAUDE.md)
+# Project Instructions (AGENTS.md)
 
 Codebase and user instructions are shown below. Be sure to adhere to these \
 instructions. IMPORTANT: These instructions OVERRIDE any default behavior \
@@ -245,9 +245,10 @@ def get_system_prompt(
     *,
     cwd: str = "",
     model_name: str = "",
-    claude_md: str = "",
+    project_instructions: str = "",
     git_status: str = "",
     language: str = "",
+    skills_prompt: str = "",
 ) -> str:
     """组装完整系统提示词。
 
@@ -255,7 +256,7 @@ def get_system_prompt(
         tools: 可用工具列表。
         cwd: 当前工作目录。
         model_name: 模型名称。
-        claude_md: CLAUDE.md 内容。
+        project_instructions: AGENTS.md 内容。
         git_status: git 状态摘要。
         language: 回复语言偏好 (e.g. "Chinese")。
 
@@ -276,9 +277,12 @@ def get_system_prompt(
         _SECTION_TOOL_USAGE,
     ]
 
-    claude_section = _section_claude_md(claude_md)
-    if claude_section:
-        sections.append(claude_section)
+    instruction_section = _section_project_instructions(project_instructions)
+    if instruction_section:
+        sections.append(instruction_section)
+
+    if skills_prompt.strip():
+        sections.append(skills_prompt.strip())
 
     tool_section = _section_tool_list(_tools)
     if tool_section:

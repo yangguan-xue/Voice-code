@@ -16,6 +16,7 @@ class TaskEventType(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    INTERRUPTED = "interrupted"
     STOP_REQUESTED = "stop_requested"
 
 

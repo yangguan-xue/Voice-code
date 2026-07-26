@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
+import uuid
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
@@ -19,14 +21,12 @@ from voice_code.agent.error_recovery import (
     get_finish_reason,
     is_model_overloaded_error,
 )
+from voice_code.agent.pipeline import run_precompact_phase
+from voice_code.agent.runtime_state import AgentRuntimeState
+from voice_code.agent.sinks import TranscriptSink
 from voice_code.agent.types import AgentEvent, EventType
 from voice_code.compact import (
-    apply_micro_compact,
-    collapse_old_turns,
-    compact_conversation,
     is_context_overflow_error,
-    should_auto_compact,
-    snip_compact,
     try_reactive_compact,
 )
 from voice_code.permissions import (
@@ -40,16 +40,27 @@ from voice_code.subagents.service import (
     activate_runtime_context,
     get_or_create_service,
 )
+from voice_code.telemetry import (
+    ErrorCode,
+    EventName,
+    MetricName,
+    bind_telemetry_context,
+    new_correlation_id,
+    new_telemetry_id,
+    record_counter,
+    record_histogram,
+    start_span,
+)
 from voice_code.tools import find_tool_by_name
 from voice_code.tools.streaming_executor import AbortReason, StreamingToolExecutor
+
+if TYPE_CHECKING:
+    from voice_code.memory.rag_service import MemoryRagService
 
 logger = logging.getLogger(__name__)
 
 _ERROR_TOOL_NOT_FOUND = (
     "<tool_use_error>Error: No such tool available: {name}</tool_use_error>"
-)
-_ERROR_TOOL_EXEC = (
-    "<tool_use_error>Error calling tool ({name}): {error}</tool_use_error>"
 )
 _ERROR_PERMISSION_DENIED = (
     "Error: The user doesn't want to proceed with this tool use. "
@@ -108,6 +119,11 @@ def _should_redirect_bash_command(command: str) -> bool:
     return normalized.startswith(prefixes)
 
 
+def _bash_search_redirect_allowed(tool: BaseTool | None) -> bool:
+    metadata = tool.metadata if tool and isinstance(tool.metadata, dict) else {}
+    return bool(metadata.get("allow_discovery_commands", False))
+
+
 def _get_reasoning(chunk: object) -> str:
     """Extract DeepSeek reasoning_content from a streaming chunk."""
     # LangChain ChatOpenAI stores extra fields in additional_kwargs
@@ -117,6 +133,21 @@ def _get_reasoning(chunk: object) -> str:
         if reasoning:
             return str(reasoning)
     return ""
+
+
+def _record_llm_tokens(message: object, *, provider: str, model: str) -> None:
+    usage = getattr(message, "usage_metadata", None)
+    if not isinstance(usage, dict):
+        return
+    for key, direction in (("input_tokens", "input"), ("output_tokens", "output")):
+        value = usage.get(key)
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
+            continue
+        record_counter(
+            MetricName.LLM_TOKENS_TOTAL,
+            float(value),
+            attributes={"provider": provider, "model": model, "direction": direction},
+        )
 
 
 def _tools_to_openai_dicts(tools: list[BaseTool]) -> list[dict[str, object]]:
@@ -163,6 +194,9 @@ async def agent_loop(
     fallback_model: ChatOpenAI | None = None,
     runtime_session_id: str | None = None,
     memory_messages: list[HumanMessage] | None = None,
+    memory_service: MemoryRagService | None = None,
+    memory_user_id: str = "local",
+    memory_project_key: str | None = None,
 ) -> AsyncGenerator[AgentEvent, None]:
     """执行 Agent 消息循环 (astream 流式)。
 
@@ -191,6 +225,15 @@ async def agent_loop(
         else "ephemeral-session"
     )
     service = get_or_create_service(session_id, event_loop=event_loop)
+    telemetry_fields = {
+        "correlation_id": new_correlation_id(),
+        "session_id": session_id,
+        "turn_id": new_telemetry_id("turn"),
+        "agent_id": "main",
+        "request_id": new_telemetry_id("request"),
+    }
+    turn_started_at = time.monotonic()
+    turn_outcome = "error"
     runtime_context = RuntimeInvocationContext(
         session_id=session_id,
         system_prompt=system_prompt,
@@ -202,7 +245,27 @@ async def agent_loop(
         service=service,
     )
     pending_notifications = service.drain_notifications_as_messages()
-    memory_msgs = memory_messages or []
+    memory_msgs = list(memory_messages or [])
+    if memory_service is not None:
+        with bind_telemetry_context(**telemetry_fields):
+            try:
+                memory_msgs.extend(
+                    await memory_service.get_memory_messages(
+                        user_input,
+                        user_id=memory_user_id,
+                        project_key=memory_project_key,
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "memory retrieval degraded",
+                    extra={
+                        "event": EventName.MEMORY_RETRIEVAL_DEGRADED,
+                        "backend": "runtime",
+                        "error_code": ErrorCode.MEMORY_INDEX_DEGRADED,
+                    },
+                )
+    transcript_sink = TranscriptSink(transcript_writer)
 
     if resume_messages:
         messages = list(resume_messages)
@@ -214,70 +277,58 @@ async def agent_loop(
         messages.extend(memory_msgs)
         messages.extend(pending_notifications)
         messages.append(HumanMessage(content=user_input))
-        if transcript_writer:
-            transcript_writer.write_message(messages[0])
+        transcript_sink.write(messages[0])
 
-    if transcript_writer:
-        for msg in memory_msgs:
-            transcript_writer.write_message(msg)
-        for notification in pending_notifications:
-            transcript_writer.write_message(notification)
-        transcript_writer.write_message(messages[-1])
+    # Retrieved memories are derived, untrusted context. Persisting them would
+    # duplicate private data into every transcript and replay stale injections.
+    transcript_sink.write_many(pending_notifications)
+    transcript_sink.write(messages[-1])
 
     openai_tools = _tools_to_openai_dicts(tools) if tools else None
-    active_model = model
-
-    turn = 0
+    state = AgentRuntimeState(messages=messages, active_model=model)
     runtime_scope = activate_runtime_context(runtime_context)
     runtime_scope.__enter__()
+    telemetry_scope = bind_telemetry_context(**telemetry_fields)
+    telemetry_scope.__enter__()
+    logger.info(
+        "agent turn started",
+        extra={
+            "event": EventName.AGENT_TURN_STARTED,
+            "outcome": "started",
+            "mode": perm_ctx.mode,
+        },
+    )
     try:
-        while turn < max_turns:
-            turn += 1
-            reactive_compact_attempted = False
-            recovery_count = 0
+        while state.turn < max_turns:
+            turn = state.begin_turn()
+            messages = state.messages
+            active_model = state.active_model
 
             if abort_sig.is_triggered():
                 yield AgentEvent(type=EventType.FINISH, turn=turn, finish_reason="interrupted")
                 return
 
-            # ---- Pre-compact: MicroCompact every turn ----
-            stats_parts: list[str] = []
-            messages, micro_tokens_freed = apply_micro_compact(messages)
-            if micro_tokens_freed > 0:
-                stats_parts.append(f"micro ~{micro_tokens_freed} tok")
-
-            messages, snip_stats = snip_compact(messages)
-            if snip_stats.active:
-                stats_parts.append(f"snip {snip_stats.details} ~{snip_stats.tokens_freed} tok")
-
-            messages, collapse_stats = collapse_old_turns(messages)
-            if collapse_stats.active:
-                stats_parts.append(f"collapse {collapse_stats.details}")
-
-            if stats_parts:
-                yield AgentEvent(
-                    type=EventType.ERROR,
-                    turn=turn,
-                    content="compact: " + " | ".join(stats_parts),
-                    phase="compacting",
-                    status="compact",
-                )
-
-            # ---- Pre-compact: AutoCompact if near token limit ----
-            if should_auto_compact(messages):
-                logger.info("Auto-compacting: turn %d", turn)
-                messages = await compact_conversation(messages, model)
-                yield AgentEvent(
-                    type=EventType.ERROR,
-                    turn=turn,
-                    content="Conversation compacted (auto)",
-                    phase="compacting",
-                    status="compact",
-                )
+            precompact = await run_precompact_phase(messages, model=model, turn=turn)
+            messages = precompact.messages
+            state.messages = messages
+            for compact_event in precompact.events:
+                yield compact_event
 
             # ---- Phase 1: Streaming LLM call ----
             while True:
                 accumulated = None
+                llm_started_at = time.monotonic()
+                model_name = str(getattr(active_model, "model_name", "unknown"))
+                provider = type(active_model).__name__
+                logger.info(
+                    "LLM request started",
+                    extra={
+                        "event": EventName.LLM_REQUEST_STARTED,
+                        "provider": provider,
+                        "model": model_name,
+                        "attempt": state.recovery_count + 1,
+                    },
+                )
                 try:
                     async with asyncio.timeout(llm_timeout_seconds):
                         if openai_tools:
@@ -315,13 +366,25 @@ async def agent_loop(
                                     content=reasoning,
                                     phase="thinking",
                                 )
-                except TimeoutError:
-                    logger.exception("LLM stream timed out at turn %d", turn)
+                except TimeoutError as exc:
+                    logger.error(
+                        "LLM request timed out",
+                        extra={
+                            "event": EventName.LLM_REQUEST_FAILED,
+                            "provider": provider,
+                            "model": model_name,
+                            "outcome": "timeout",
+                            "error_code": ErrorCode.PROVIDER_TIMEOUT,
+                            "exception_type": type(exc).__name__,
+                            "duration_ms": (time.monotonic() - llm_started_at) * 1000,
+                        },
+                    )
                     yield AgentEvent(
                         type=EventType.ERROR,
                         turn=turn,
                         content=f"LLM stream timed out after {llm_timeout_seconds:.1f}s",
                         status="generic_error",
+                        error_code=ErrorCode.PROVIDER_TIMEOUT,
                     )
                     yield AgentEvent(type=EventType.FINISH, turn=turn, finish_reason="error")
                     return
@@ -333,10 +396,19 @@ async def agent_loop(
                         and active_model is not fallback_model
                     ):
                         logger.warning(
-                            "Model overloaded at turn %d, switching to fallback model",
-                            turn,
+                            "LLM fallback selected",
+                            extra={
+                                "event": EventName.LLM_FALLBACK_SELECTED,
+                                "provider": provider,
+                                "model": model_name,
+                                "backend": type(fallback_model).__name__,
+                                "outcome": "fallback",
+                                "error_code": ErrorCode.PROVIDER_UNAVAILABLE,
+                                "duration_ms": (time.monotonic() - llm_started_at) * 1000,
+                            },
                         )
                         active_model = fallback_model
+                        state.active_model = active_model
                         yield AgentEvent(
                             type=EventType.ERROR,
                             turn=turn,
@@ -347,43 +419,105 @@ async def agent_loop(
                         continue
 
                     if not is_context_overflow_error(e):
-                        logger.exception("LLM call failed at turn %d", turn)
+                        logger.error(
+                            "LLM request failed",
+                            extra={
+                                "event": EventName.LLM_REQUEST_FAILED,
+                                "provider": provider,
+                                "model": model_name,
+                                "outcome": "error",
+                                "error_code": ErrorCode.PROVIDER_UNAVAILABLE,
+                                "exception_type": type(e).__name__,
+                                "duration_ms": (time.monotonic() - llm_started_at) * 1000,
+                            },
+                        )
                         yield AgentEvent(
                             type=EventType.ERROR,
                             turn=turn,
-                            content=str(e),
+                            content="Model provider is unavailable. Please retry.",
                             status="generic_error",
+                            error_code=ErrorCode.PROVIDER_UNAVAILABLE,
                         )
                         yield AgentEvent(type=EventType.FINISH, turn=turn, finish_reason="error")
                         return
 
-                    if reactive_compact_attempted:
-                        logger.exception("Reactive compact retry still overflowed at turn %d", turn)
+                    if state.reactive_compact_attempted:
+                        logger.error(
+                            "LLM context recovery failed",
+                            extra={
+                                "event": EventName.LLM_REQUEST_FAILED,
+                                "provider": provider,
+                                "model": model_name,
+                                "outcome": "context_overflow",
+                                "error_code": ErrorCode.MODEL_RESPONSE_INVALID,
+                                "exception_type": type(e).__name__,
+                            },
+                        )
                         yield AgentEvent(
                             type=EventType.ERROR,
                             turn=turn,
-                            content=str(e),
+                            content="Model context recovery failed.",
                             status="generic_error",
+                            error_code=ErrorCode.MODEL_RESPONSE_INVALID,
                         )
                         yield AgentEvent(type=EventType.FINISH, turn=turn, finish_reason="error")
                         return
 
-                    compacted = await try_reactive_compact(messages, model)
+                    logger.warning(
+                        "LLM context overflow triggered recovery",
+                        extra={
+                            "event": EventName.LLM_REQUEST_FAILED,
+                            "provider": provider,
+                            "model": model_name,
+                            "outcome": "context_overflow",
+                            "error_code": ErrorCode.MODEL_RESPONSE_INVALID,
+                            "duration_ms": (time.monotonic() - llm_started_at) * 1000,
+                        },
+                    )
+                    compact_started_at = time.monotonic()
+                    compact_outcome = "error"
+                    try:
+                        with start_span("compact.run", {"strategy": "reactive"}):
+                            compacted = await try_reactive_compact(messages, model)
+                        compact_outcome = "success"
+                    finally:
+                        record_counter(
+                            MetricName.COMPACTION_TOTAL,
+                            attributes={
+                                "strategy": "reactive",
+                                "outcome": compact_outcome,
+                            },
+                        )
+                        record_histogram(
+                            MetricName.COMPACTION_DURATION_SECONDS,
+                            time.monotonic() - compact_started_at,
+                            attributes={"strategy": "reactive"},
+                        )
                     if len(compacted) >= len(messages):
-                        logger.exception(
-                            "Reactive compact did not reduce message count at turn %d", turn
+                        logger.error(
+                            "LLM context recovery made no progress",
+                            extra={
+                                "event": EventName.LLM_REQUEST_FAILED,
+                                "provider": provider,
+                                "model": model_name,
+                                "outcome": "context_overflow",
+                                "error_code": ErrorCode.MODEL_RESPONSE_INVALID,
+                                "exception_type": type(e).__name__,
+                            },
                         )
                         yield AgentEvent(
                             type=EventType.ERROR,
                             turn=turn,
-                            content=str(e),
+                            content="Model context recovery made no progress.",
                             status="generic_error",
+                            error_code=ErrorCode.MODEL_RESPONSE_INVALID,
                         )
                         yield AgentEvent(type=EventType.FINISH, turn=turn, finish_reason="error")
                         return
 
-                    reactive_compact_attempted = True
+                    state.reactive_compact_attempted = True
                     messages = compacted
+                    state.messages = messages
                     yield AgentEvent(
                         type=EventType.ERROR,
                         turn=turn,
@@ -393,6 +527,17 @@ async def agent_loop(
                     )
                     continue
 
+                logger.info(
+                    "LLM request finished",
+                    extra={
+                        "event": EventName.LLM_REQUEST_FINISHED,
+                        "provider": provider,
+                        "model": model_name,
+                        "outcome": "success",
+                        "duration_ms": (time.monotonic() - llm_started_at) * 1000,
+                    },
+                )
+                _record_llm_tokens(accumulated, provider=provider, model=model_name)
                 finish_reason = get_finish_reason(accumulated)
                 if finish_reason == "length" and accumulated is not None:
                     truncated_content = (
@@ -411,10 +556,9 @@ async def agent_loop(
                             tool_calls=truncated_tool_calls if truncated_tool_calls else [],
                         )
                     )
-                    if transcript_writer:
-                        transcript_writer.write_message(messages[-1])
+                    transcript_sink.write(messages[-1])
 
-                    if recovery_count >= MAX_OUTPUT_RECOVERY:
+                    if state.recovery_count >= MAX_OUTPUT_RECOVERY:
                         yield AgentEvent(
                             type=EventType.ERROR,
                             turn=turn,
@@ -424,10 +568,9 @@ async def agent_loop(
                         yield AgentEvent(type=EventType.FINISH, turn=turn, finish_reason="error")
                         return
 
-                    recovery_count += 1
+                    state.recovery_count += 1
                     messages.append(HumanMessage(content=MAX_OUTPUT_RECOVERY_MSG))
-                    if transcript_writer:
-                        transcript_writer.write_message(messages[-1])
+                    transcript_sink.write(messages[-1])
                     yield AgentEvent(
                         type=EventType.ERROR,
                         turn=turn,
@@ -466,11 +609,35 @@ async def agent_loop(
                     tool_calls=response_tool_calls if response_tool_calls else [],  # type: ignore[arg-type]
                 )
             )
-            if transcript_writer:
-                transcript_writer.write_message(messages[-1])
+            transcript_sink.write(messages[-1])
 
             # ---- Phase 2: No tool calls → done ----
             if not response_tool_calls:
+                if memory_service is not None:
+                    enqueue_completed = getattr(
+                        memory_service,
+                        "enqueue_completed_turn",
+                        None,
+                    )
+                    if enqueue_completed is not None:
+                        try:
+                            enqueue_completed(
+                                user_input=user_input,
+                                assistant_response=response_content,
+                                user_id=memory_user_id,
+                                project_key=memory_project_key,
+                                session_id=session_id,
+                                turn_id=f"turn-{turn}-{uuid.uuid4().hex}",
+                            )
+                        except Exception:
+                            logger.warning(
+                                "memory extraction enqueue failed",
+                                extra={
+                                    "event": EventName.MEMORY_EXTRACTION_ENQUEUE_FAILED,
+                                    "error_code": ErrorCode.BACKGROUND_TASK_FAILED,
+                                },
+                            )
+                turn_outcome = "completed"
                 yield AgentEvent(type=EventType.FINISH, turn=turn, finish_reason="completed")
                 return
 
@@ -490,15 +657,19 @@ async def agent_loop(
                 tool_name = tc["name"]
                 tool_args = tc["args"]
                 tc_id = str(tc["id"])
+                tool = find_tool_by_name(tool_name, tools)
 
                 if tool_name == "bash":
                     command = str(tool_args.get("command", ""))
-                    if _should_redirect_bash_command(command):
+                    should_block_redirect = (
+                        _should_redirect_bash_command(command)
+                        and not _bash_search_redirect_allowed(tool)
+                    )
+                    if should_block_redirect:
                         messages.append(
                             ToolMessage(content=_ERROR_BASH_SEARCH_REDIRECT, tool_call_id=tc_id)
                         )
-                        if transcript_writer:
-                            transcript_writer.write_message(messages[-1])
+                        transcript_sink.write(messages[-1])
                         yield AgentEvent(
                             type=EventType.ERROR,
                             turn=turn,
@@ -510,12 +681,10 @@ async def agent_loop(
                         )
                         continue
 
-                tool = find_tool_by_name(tool_name, tools)
                 if tool is None:
                     error_content = _ERROR_TOOL_NOT_FOUND.format(name=tool_name)
                     messages.append(ToolMessage(content=error_content, tool_call_id=tc_id))
-                    if transcript_writer:
-                        transcript_writer.write_message(messages[-1])
+                    transcript_sink.write(messages[-1])
                     yield AgentEvent(
                         type=EventType.ERROR,
                         turn=turn,
@@ -532,17 +701,17 @@ async def agent_loop(
                     if isinstance(tool.metadata, dict)
                     else False
                 )
-                decision = can_use_tool(
-                    tool_name=tool_name,
-                    tool_input=tool_args,
-                    tool_metadata=tool.metadata if isinstance(tool.metadata, dict) else {},
-                    context=perm_ctx,
-                )
+                with bind_telemetry_context(tool_call_id=tc_id):
+                    decision = can_use_tool(
+                        tool_name=tool_name,
+                        tool_input=tool_args,
+                        tool_metadata=tool.metadata if isinstance(tool.metadata, dict) else {},
+                        context=perm_ctx,
+                    )
                 if decision.behavior == PermissionBehavior.DENY:
                     deny_msg = decision.message or _ERROR_PERMISSION_DENIED
                     messages.append(ToolMessage(content=deny_msg, tool_call_id=tc_id))
-                    if transcript_writer:
-                        transcript_writer.write_message(messages[-1])
+                    transcript_sink.write(messages[-1])
                     yield AgentEvent(
                         type=EventType.ERROR,
                         turn=turn,
@@ -565,8 +734,7 @@ async def agent_loop(
                 for item in exec_plan:
                     error_content = _ERROR_TOOL_ABORTED.format(reason="user_interrupted")
                     messages.append(ToolMessage(content=error_content, tool_call_id=item["id"]))
-                    if transcript_writer:
-                        transcript_writer.write_message(messages[-1])
+                    transcript_sink.write(messages[-1])
                     yield AgentEvent(
                         type=EventType.ERROR,
                         turn=turn,
@@ -584,8 +752,7 @@ async def agent_loop(
 
             for event in executor.get_completed_results():
                 messages.append(ToolMessage(content=event.content, tool_call_id=event.tool_call_id))
-                if transcript_writer:
-                    transcript_writer.write_message(messages[-1])
+                transcript_sink.write(messages[-1])
                 yield event
 
             remaining_task = asyncio.create_task(executor.get_remaining_results())
@@ -597,8 +764,7 @@ async def agent_loop(
 
             for event in await remaining_task:
                 messages.append(ToolMessage(content=event.content, tool_call_id=event.tool_call_id))
-                if transcript_writer:
-                    transcript_writer.write_message(messages[-1])
+                transcript_sink.write(messages[-1])
                 yield event
 
             if abort_sig.is_triggered():
@@ -606,6 +772,17 @@ async def agent_loop(
                 return
 
         # Max turns reached
-        yield AgentEvent(type=EventType.FINISH, turn=turn, finish_reason="max_turns")
+        turn_outcome = "max_turns"
+        yield AgentEvent(type=EventType.FINISH, turn=state.turn, finish_reason="max_turns")
     finally:
         runtime_scope.__exit__(None, None, None)
+        logger.info(
+            "agent turn finished",
+            extra={
+                "event": EventName.AGENT_TURN_FINISHED,
+                "outcome": turn_outcome,
+                "mode": perm_ctx.mode,
+                "duration_ms": (time.monotonic() - turn_started_at) * 1000,
+            },
+        )
+        telemetry_scope.__exit__(None, None, None)

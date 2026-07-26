@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Any
@@ -11,6 +12,7 @@ from typing import Any
 from langchain_core.tools import BaseTool
 
 from voice_code.agent.types import AgentEvent, EventType
+from voice_code.telemetry import ErrorCode, EventName, bind_telemetry_context
 from voice_code.tools import find_tool_by_name
 
 logger = logging.getLogger(__name__)
@@ -25,7 +27,8 @@ _ERROR_TOOL_NOT_FOUND = (
     "<tool_use_error>Error: No such tool available: {name}</tool_use_error>"
 )
 _ERROR_TOOL_EXEC = (
-    "<tool_use_error>Error calling tool ({name}): {error}</tool_use_error>"
+    "<tool_use_error>Tool execution failed ({name}): "
+    "TOOL_EXECUTION_FAILED</tool_use_error>"
 )
 _ERROR_ABORTED = (
     "<tool_use_error>Error: Tool execution aborted: {reason}</tool_use_error>"
@@ -190,38 +193,89 @@ class StreamingToolExecutor:
         )
 
     async def _execute_tool(self, tracked: TrackedTool) -> None:
-        try:
-            if tracked.tool is None:
-                content = _ERROR_TOOL_NOT_FOUND.format(name=tracked.name)
-                event_type = EventType.ERROR
-            else:
-                result = await asyncio.to_thread(tracked.tool.invoke, tracked.args)
-                content = self._apply_result_budget(tracked.tool, str(result))
-                event_type = EventType.TOOL_RESULT
-        except asyncio.CancelledError:
-            content = _ERROR_ABORTED.format(
-                reason=(self._abort_reason.name.lower() if self._abort_reason else "cancelled")
+        started_at = time.monotonic()
+        failure_logged = False
+        failure_outcome = "error"
+        with bind_telemetry_context(tool_call_id=tracked.id):
+            logger.info(
+                "tool execution started",
+                extra={
+                    "event": EventName.TOOL_EXECUTION_STARTED,
+                    "tool_name": tracked.name,
+                    "outcome": "started",
+                },
             )
-            event_type = EventType.ERROR
-        except Exception as exc:
-            logger.exception("Tool execution failed: %s", tracked.name)
-            content = _ERROR_TOOL_EXEC.format(name=tracked.name, error=exc)
-            event_type = EventType.ERROR
-        finally:
-            tracked.status = ToolStatus.YIELDED
-            await self._completed_queue.put(
-                AgentEvent(
-                    type=event_type,
-                    turn=tracked.turn,
-                    content=content,
-                    status="" if event_type == EventType.TOOL_RESULT else "generic_error",
-                    tool_name=tracked.name,
-                    tool_call_id=tracked.id,
-                    tool_args=tracked.args,
-                    tool_result=content if event_type == EventType.TOOL_RESULT else "",
+            try:
+                if tracked.tool is None:
+                    content = _ERROR_TOOL_NOT_FOUND.format(name=tracked.name)
+                    event_type = EventType.ERROR
+                    failure_outcome = "not_found"
+                else:
+                    result = await asyncio.to_thread(tracked.tool.invoke, tracked.args)
+                    content = self._apply_result_budget(tracked.tool, str(result))
+                    event_type = EventType.TOOL_RESULT
+            except asyncio.CancelledError:
+                content = _ERROR_ABORTED.format(
+                    reason=(self._abort_reason.name.lower() if self._abort_reason else "cancelled")
                 )
-            )
-            self._process_queue()
+                event_type = EventType.ERROR
+                failure_outcome = "cancelled"
+            except Exception as exc:
+                logger.error(
+                    "tool execution failed",
+                    extra={
+                        "event": EventName.TOOL_EXECUTION_FAILED,
+                        "tool_name": tracked.name,
+                        "outcome": "error",
+                        "error_code": ErrorCode.TOOL_EXECUTION_FAILED,
+                        "exception_type": type(exc).__name__,
+                        "duration_ms": (time.monotonic() - started_at) * 1000,
+                    },
+                )
+                failure_logged = True
+                content = _ERROR_TOOL_EXEC.format(name=tracked.name)
+                event_type = EventType.ERROR
+            finally:
+                if event_type == EventType.TOOL_RESULT:
+                    logger.info(
+                        "tool execution finished",
+                        extra={
+                            "event": EventName.TOOL_EXECUTION_FINISHED,
+                            "tool_name": tracked.name,
+                            "outcome": "success",
+                            "duration_ms": (time.monotonic() - started_at) * 1000,
+                        },
+                    )
+                elif not failure_logged:
+                    logger.warning(
+                        "tool execution did not complete",
+                        extra={
+                            "event": EventName.TOOL_EXECUTION_FAILED,
+                            "tool_name": tracked.name,
+                            "outcome": failure_outcome,
+                            "error_code": ErrorCode.TOOL_EXECUTION_FAILED,
+                            "duration_ms": (time.monotonic() - started_at) * 1000,
+                        },
+                    )
+                tracked.status = ToolStatus.YIELDED
+                await self._completed_queue.put(
+                    AgentEvent(
+                        type=event_type,
+                        turn=tracked.turn,
+                        content=content,
+                        status="" if event_type == EventType.TOOL_RESULT else "generic_error",
+                        error_code=(
+                            ""
+                            if event_type == EventType.TOOL_RESULT
+                            else ErrorCode.TOOL_EXECUTION_FAILED
+                        ),
+                        tool_name=tracked.name,
+                        tool_call_id=tracked.id,
+                        tool_args=tracked.args,
+                        tool_result=content if event_type == EventType.TOOL_RESULT else "",
+                    )
+                )
+                self._process_queue()
 
     def _emit_abort_for_queued(self) -> None:
         reason = self._abort_reason.name.lower() if self._abort_reason else "aborted"

@@ -48,7 +48,7 @@ class AudioPlayer:
                 else:
                     audio_data = samples
         except Exception as e:
-            logger.exception("AudioPlayer: failed to decode wav")
+            logger.error("AudioPlayer: failed to decode wav")
             raise RuntimeError(f"audio decode failed: {e}") from e
 
         with self._lock:
@@ -58,7 +58,7 @@ class AudioPlayer:
             sd.play(audio_data, samplerate=sample_rate)
             sd.wait()
         except Exception as e:
-            logger.exception("AudioPlayer: playback error")
+            logger.error("AudioPlayer: playback error")
             raise RuntimeError(f"audio playback failed: {e}") from e
         finally:
             with self._lock:
@@ -107,7 +107,7 @@ class AudioPlayer:
                     total_samples += len(chunk)
 
         except Exception:
-            logger.exception("AudioPlayer: stream playback error")
+            logger.error("AudioPlayer: stream playback error")
             raise
         finally:
             if output_stream is not None:

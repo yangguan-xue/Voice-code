@@ -53,7 +53,12 @@ class TaskRegistry:
             task.status = status
             if status == TaskStatus.RUNNING and task.started_at is None:
                 task.started_at = now
-            if status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED):
+            if status in (
+                TaskStatus.COMPLETED,
+                TaskStatus.FAILED,
+                TaskStatus.CANCELLED,
+                TaskStatus.INTERRUPTED,
+            ):
                 task.finished_at = now
             if error is not None:
                 task.error = error
@@ -135,4 +140,6 @@ def _status_to_event_type(status: TaskStatus) -> TaskEventType:
         return TaskEventType.FAILED
     if status == TaskStatus.CANCELLED:
         return TaskEventType.CANCELLED
+    if status == TaskStatus.INTERRUPTED:
+        return TaskEventType.INTERRUPTED
     return TaskEventType.PROGRESS

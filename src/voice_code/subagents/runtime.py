@@ -16,6 +16,7 @@ from voice_code.session.transcript import TranscriptWriter
 from voice_code.subagents.registry import TaskRegistry
 from voice_code.subagents.transcripts import get_subagent_transcript_path
 from voice_code.subagents.types import AgentTask, TaskProgress, TaskStatus, TaskSummary
+from voice_code.telemetry import MetricName, record_counter, record_histogram, start_span
 
 AgentLoopFn = Callable[..., AsyncGenerator[AgentEvent, None]]
 
@@ -92,49 +93,60 @@ class SubagentRuntime:
         started_at = time.time()
 
         try:
-            async for event in self._agent_loop_fn(
-                user_input=request.prompt,
-                tools=request.tools,
-                system_prompt=request.system_prompt,
-                model=request.model,
-                max_turns=request.max_turns,
-                permission_context=request.permission_context,
-                transcript_writer=writer,
-                fallback_model=request.fallback_model,
-                runtime_session_id=request.session_id,
-            ):
-                if event.type == EventType.TEXT and event.content:
-                    text_chunks.append(event.content)
-                    self._registry.update_progress(
-                        request.task_id,
-                        TaskProgress(
-                            tool_use_count=tool_use_count,
-                            token_count=0,
-                            last_activity="streaming_text",
-                            summary="streaming",
-                        ),
-                    )
-                elif event.type == EventType.TOOL_CALL:
-                    tool_use_count += 1
-                    self._registry.update_progress(
-                        request.task_id,
-                        TaskProgress(
-                            tool_use_count=tool_use_count,
-                            token_count=0,
-                            last_activity=event.tool_name,
-                            summary=f"tool:{event.tool_name}",
-                        ),
-                    )
-                elif event.type == EventType.ERROR and event.content:
-                    error_message = event.content
-                elif event.type == EventType.FINISH:
-                    finish_reason = event.finish_reason or "error"
+            with start_span("subagent.run", {"agent_type": request.agent_type}):
+                async for event in self._agent_loop_fn(
+                    user_input=request.prompt,
+                    tools=request.tools,
+                    system_prompt=request.system_prompt,
+                    model=request.model,
+                    max_turns=request.max_turns,
+                    permission_context=request.permission_context,
+                    transcript_writer=writer,
+                    fallback_model=request.fallback_model,
+                    runtime_session_id=request.session_id,
+                ):
+                    if event.type == EventType.TEXT and event.content:
+                        text_chunks.append(event.content)
+                        self._registry.update_progress(
+                            request.task_id,
+                            TaskProgress(
+                                tool_use_count=tool_use_count,
+                                token_count=0,
+                                last_activity="streaming_text",
+                                summary="streaming",
+                            ),
+                        )
+                    elif event.type == EventType.TOOL_CALL:
+                        tool_use_count += 1
+                        self._registry.update_progress(
+                            request.task_id,
+                            TaskProgress(
+                                tool_use_count=tool_use_count,
+                                token_count=0,
+                                last_activity=event.tool_name,
+                                summary=f"tool:{event.tool_name}",
+                            ),
+                        )
+                    elif event.type == EventType.ERROR and event.content:
+                        error_message = event.content
+                    elif event.type == EventType.FINISH:
+                        finish_reason = event.finish_reason or "error"
         finally:
             if text_chunks:
                 writer.write_message(AIMessage(content="".join(text_chunks)))
             writer.close()
 
         duration_ms = int((time.time() - started_at) * 1000)
+        outcome = "success" if finish_reason == "completed" else "error"
+        record_counter(
+            MetricName.SUBAGENT_TASKS_TOTAL,
+            attributes={"agent_type": request.agent_type, "outcome": outcome},
+        )
+        record_histogram(
+            MetricName.SUBAGENT_TASK_DURATION_SECONDS,
+            duration_ms / 1000,
+            attributes={"agent_type": request.agent_type},
+        )
         if finish_reason == "completed":
             self._registry.complete_task(
                 request.task_id,

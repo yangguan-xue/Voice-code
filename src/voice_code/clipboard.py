@@ -27,4 +27,11 @@ def copy_to_clipboard(text: str) -> bool:
                 continue
         return False
 
+    if sys.platform == "win32":
+        try:
+            subprocess.run(["clip.exe"], input=text, text=True, check=True, timeout=2)
+            return True
+        except (FileNotFoundError, subprocess.SubprocessError, OSError):
+            return False
+
     return False

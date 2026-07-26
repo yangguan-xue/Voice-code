@@ -4,18 +4,21 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import logging
 import os
 import signal
 
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
+from voice_code import __version__
+from voice_code.delegation import DelegationService
 from voice_code.llm.models import init_model
+from voice_code.telemetry import configure_logging
 from voice_code.voice.agent_bridge import AgentBridge
 from voice_code.voice.audio_player import AudioPlayer
 from voice_code.voice.classifier import CommandClassifier
 from voice_code.voice.command_assistant import CommandAssistant
+from voice_code.voice.dashboard import VoiceDashboard, VoiceModeApp
 from voice_code.voice.orchestrator import VoiceOrchestrator
 from voice_code.voice.segment_recorder import SegmentRecorder
 from voice_code.voice.stepfun_client import (
@@ -30,7 +33,7 @@ from voice_code.voice.tts_client import VoxcTtsClient
 from voice_code.voice.types import SupportsSttClient, SupportsTtsClient, VoiceState
 from voice_code.voice.wakeword import WakeWordDetector
 
-logger = logging.getLogger(__name__)
+USER_AGENT = f"voice-code-voice/{__version__}"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -45,6 +48,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     p.add_argument("--debug", action="store_true", help="Debug logging")
+    p.add_argument(
+        "--log-format",
+        choices=["console", "json"],
+        default=None,
+        help="Log format (default: REASONING_LOG_FORMAT or console)",
+    )
     p.add_argument("--stt-url", default="http://localhost:8765", help="STT server URL (自建模式)")
     p.add_argument("--tts-url", default="http://localhost:8775", help="TTS server URL (自建模式)")
     p.add_argument(
@@ -61,6 +70,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--no-wake", action="store_true", help="Skip wake word, start in listening mode")
     p.add_argument("--no-tts", action="store_true", help="Skip TTS playback")
     p.add_argument(
+        "--plain-display",
+        action="store_true",
+        help="Use the compact ANSI display instead of the full-screen voice page",
+    )
+    p.add_argument(
         "--test-audio", action="store_true",
         help="Play a test sound on startup and exit",
     )
@@ -71,20 +85,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def _setup_logging(debug: bool) -> None:
-    if debug:
-        logging.basicConfig(
-            level=logging.DEBUG,
-            format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-            datefmt="%H:%M:%S",
-        )
-    else:
-        # 非调试模式：只显示 WARNING 及以上，屏蔽 httpx、VAD 等信息
-        logging.basicConfig(
-            level=logging.WARNING,
-            format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-            datefmt="%H:%M:%S",
-        )
+def _setup_logging(debug: bool, log_format: str | None = None) -> None:
+    configure_logging(
+        debug=debug,
+        json_output=None if log_format is None else log_format == "json",
+    )
 
 
 def _on_state_change(old: VoiceState, new_state: VoiceState) -> None:
@@ -172,13 +177,15 @@ async def run(args: argparse.Namespace) -> None:
 
     if use_stepfun:
         stt_client: SupportsSttClient = StepFunASRClient(api_key=stepfun_key)
-        tts_client: SupportsTtsClient = _VerboseStepFunTtsClient(
+        stepfun_tts_type = _VerboseStepFunTtsClient if args.plain_display else StepFunTTSClient
+        tts_client: SupportsTtsClient = stepfun_tts_type(
             api_key=stepfun_key,
             voice=args.stepfun_voice,
         )
     else:
         stt_client = SttClient(base_url=f"{args.stt_url}/transcribe")
-        tts_client = _VerboseTtsClient(base_url=f"{args.tts_url}/tts")
+        tts_type = _VerboseTtsClient if args.plain_display else VoxcTtsClient
+        tts_client = tts_type(base_url=f"{args.tts_url}/tts")
 
     # Check services
     stt_ok = await stt_client.health_check()
@@ -199,10 +206,8 @@ async def run(args: argparse.Namespace) -> None:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, player.play_wav_bytes, audio)
             print("  [TEST] 播放完成 ✓")
-        except Exception as e:
-            print(f"  [TEST] 播放失败: {e}")
-            import traceback
-            traceback.print_exc()
+        except Exception:
+            print("  [TEST] 播放失败: PROVIDER_UNAVAILABLE")
         print()
         return
 
@@ -242,6 +247,11 @@ async def run(args: argparse.Namespace) -> None:
     wake_words = [w.strip() for w in args.wake_word.split(",") if w.strip()]
     wakeword = WakeWordDetector(wake_words=wake_words if wake_words else None)
 
+    dashboard = None
+    if not args.plain_display:
+        backend = "Step Fun" if use_stepfun else "自建语音服务"
+        dashboard = VoiceDashboard(profile=args.profile or "default", backend=backend)
+
     # Orchestrator
     orchestrator = VoiceOrchestrator(
         stt_client=stt_client,
@@ -253,35 +263,45 @@ async def run(args: argparse.Namespace) -> None:
         audio_player=player,
         command_assistant=command_assistant,
         profile=args.profile,
+        delegation_service=DelegationService(bridge._runtime.cwd),  # type: ignore[union-attr]
+        display=dashboard,
+        console_output=args.plain_display,
     )
-    orchestrator.on_state_change(_on_state_change)
-    orchestrator.on_turn_timing(_on_turn_timing)
+    if args.plain_display:
+        orchestrator.on_state_change(_on_state_change)
+        orchestrator.on_turn_timing(_on_turn_timing)
 
     # Start in listening mode if --no-wake
-    if args.no_wake:
-        # Patch: start orchestrator, then directly enter listening
-        await orchestrator.start()
-        # Force transition to listening (bypass wake word)
-        await orchestrator._enter_listening()  # type: ignore[attr-used]
-        print("\n>>> 已跳过唤醒词，直接进入聆听模式。请说话...")
-    else:
-        await orchestrator.start()
-        print(f"\n>>> 正在监听唤醒词... 说\"{args.wake_word}\"唤醒我。")
-
-    # Keep running until Ctrl+C
-    loop = asyncio.get_running_loop()
-    stop_event = asyncio.Event()
-
-    def _on_sigint() -> None:
-        print("\n正在退出...")
-        stop_event.set()
-
-    loop.add_signal_handler(signal.SIGINT, _on_sigint)
     try:
-        await stop_event.wait()
+        await orchestrator.start()
+        if args.no_wake:
+            await orchestrator._enter_listening()  # type: ignore[attr-used]
+            if dashboard is not None:
+                dashboard.set_notice("已跳过唤醒词，可以直接说话")
+            else:
+                print("\n>>> 已跳过唤醒词，直接进入聆听模式。请说话...")
+        elif dashboard is not None:
+            dashboard.set_notice(f"等待唤醒词：{args.wake_word}")
+        else:
+            print(f"\n>>> 正在监听唤醒词... 说\"{args.wake_word}\"唤醒我。")
+
+        if dashboard is not None:
+            await VoiceModeApp(dashboard, controls=orchestrator).run_async()
+        else:
+            # Compact display keeps the original signal-driven lifecycle.
+            loop = asyncio.get_running_loop()
+            stop_event = asyncio.Event()
+
+            def _on_sigint() -> None:
+                print("\n正在退出...")
+                stop_event.set()
+
+            loop.add_signal_handler(signal.SIGINT, _on_sigint)
+            await stop_event.wait()
     finally:
         await orchestrator.stop()
-        print("已退出语音模式。")
+        if args.plain_display:
+            print("已退出语音模式。")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -290,7 +310,7 @@ def main(argv: list[str] | None = None) -> None:
     _load_dotenv()
 
     args = parse_args(argv)
-    _setup_logging(args.debug)
+    _setup_logging(args.debug, args.log_format)
     try:
         asyncio.run(run(args))
     except KeyboardInterrupt:

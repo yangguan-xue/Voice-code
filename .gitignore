@@ -9,3 +9,16 @@ __pycache__/
 dist/
 *.egg-info/
 build/
+node_modules/
+desktop/dist/
+desktop/node_modules/
+desktop/src-tauri/target/
+desktop/src-tauri/resources/runtime/*
+!desktop/src-tauri/resources/runtime/.gitkeep
+web/dist/
+web/node_modules/
+*.log
+*.exe
+*.msi
+*.dmg
+*.app/

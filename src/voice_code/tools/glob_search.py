@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from langchain_core.tools import tool
+
+from voice_code.security import WorkspaceBoundaryError, resolve_workspace_path
 
 _MAX_RESULTS = 100
 _EXACT_PATH_HINT = "Report the exact missing path and do not assume a similar file or directory."
@@ -28,7 +28,10 @@ def glob(pattern: str, path: str = ".") -> str:
     Returns:
         Matching file paths, one per line.
     """
-    base = Path(path).expanduser().resolve()
+    try:
+        base = resolve_workspace_path(path)
+    except WorkspaceBoundaryError as exc:
+        return f"<tool_use_error>Error: {exc}</tool_use_error>"
 
     if not base.exists():
         return (
@@ -41,9 +44,13 @@ def glob(pattern: str, path: str = ".") -> str:
 
     matches: list[str] = []
     for p in base.glob(pattern):
+        try:
+            resolve_workspace_path(p)
+        except WorkspaceBoundaryError:
+            continue
         if matches.__len__() >= _MAX_RESULTS:
             break
-        rel = str(p.relative_to(base))
+        rel = p.relative_to(base).as_posix()
         suffix = "/" if p.is_dir() else ""
         matches.append(rel + suffix)
 

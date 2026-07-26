@@ -16,6 +16,7 @@ from voice_code.agent.abort import AbortSignal
 from voice_code.agent.loop import agent_loop
 from voice_code.agent.types import AgentEvent, EventType
 from voice_code.permissions import PermissionContext
+from voice_code.session.transcript import TranscriptWriter
 
 
 def _make_chunks(
@@ -84,6 +85,44 @@ async def test_single_turn_no_tools():
     assert events[-1].turn == 1
     texts = [e for e in events if e.type == EventType.TEXT]
     assert len(texts) > 0
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_retrieves_memory_without_persisting_injected_context(tmp_path):
+    captured_messages: list[list] = []
+
+    async def fake_astream(messages, **_kwargs):
+        captured_messages.append(list(messages))
+        yield AIMessageChunk(content="已按偏好回答。")
+
+    class FakeMemoryService:
+        async def get_memory_messages(self, query, *, user_id, project_key, limit=5):
+            assert query == "解释代码"
+            assert user_id == "local"
+            assert project_key == "project-a"
+            return [HumanMessage(content="<memory_context>偏好简洁回答</memory_context>")]
+
+    model = MagicMock()
+    model.astream = fake_astream
+    transcript = TranscriptWriter(tmp_path / "session.jsonl")
+
+    await _async_collect(
+        agent_loop(
+            user_input="解释代码",
+            tools=[],
+            system_prompt="You are helpful.",
+            model=model,
+            transcript_writer=transcript,
+            memory_service=FakeMemoryService(),
+            memory_user_id="local",
+            memory_project_key="project-a",
+        )
+    )
+    transcript.close()
+
+    assert "偏好简洁回答" in str(captured_messages[0][1].content)
+    persisted = TranscriptWriter(tmp_path / "session.jsonl").read_all_messages()
+    assert all("偏好简洁回答" not in str(message.content) for message in persisted)
 
 
 # ============================================================
@@ -313,7 +352,9 @@ async def test_permission_context_is_honored_for_write_tools():
 
     turn1_chunks = _make_chunks(
         content="Writing now.",
-        tool_calls=[{"name": "write", "args": {"file_path": "/tmp/x", "content": "y"}, "id": "tc_1"}],
+        tool_calls=[
+            {"name": "write", "args": {"file_path": "/tmp/x", "content": "y"}, "id": "tc_1"}
+        ],
     )
     turn2_chunks = _make_chunks(content="Done.")
     model = _make_model(turn1_chunks, turn2_chunks)
@@ -375,7 +416,9 @@ async def test_abort_before_tool_execution_skips_tools():
 
     turn1_chunks = _make_chunks(
         content="Writing now.",
-        tool_calls=[{"name": "write", "args": {"file_path": "/tmp/x", "content": "y"}, "id": "tc_1"}],
+        tool_calls=[
+            {"name": "write", "args": {"file_path": "/tmp/x", "content": "y"}, "id": "tc_1"}
+        ],
     )
 
     async def fake_astream(*args: object, **kwargs: object) -> AsyncGenerator[AIMessageChunk, None]:
@@ -570,7 +613,11 @@ async def test_truncated_response_triggers_resume():
         )
     )
 
-    assert any("max_output_tokens hit, resuming" in e.content for e in events if e.type == EventType.ERROR)
+    assert any(
+        "max_output_tokens hit, resuming" in e.content
+        for e in events
+        if e.type == EventType.ERROR
+    )
     assert events[-1].type == EventType.FINISH
     assert events[-1].finish_reason == "completed"
 
@@ -592,7 +639,11 @@ async def test_truncated_response_gives_up_after_max_recovery():
         )
     )
 
-    assert any("Output token limit hit too many times" in e.content for e in events if e.type == EventType.ERROR)
+    assert any(
+        "Output token limit hit too many times" in e.content
+        for e in events
+        if e.type == EventType.ERROR
+    )
     assert events[-1].type == EventType.FINISH
     assert events[-1].finish_reason == "error"
 
@@ -604,7 +655,10 @@ async def test_model_overloaded_switches_to_fallback():
 
     primary = MagicMock()
 
-    async def primary_astream(*args: object, **kwargs: object) -> AsyncGenerator[AIMessageChunk, None]:
+    async def primary_astream(
+        *args: object,
+        **kwargs: object,
+    ) -> AsyncGenerator[AIMessageChunk, None]:
         raise OverloadedError("overloaded")
         if False:
             yield AIMessageChunk(content="")
@@ -622,7 +676,11 @@ async def test_model_overloaded_switches_to_fallback():
         )
     )
 
-    assert any("Switched to fallback model" in e.content for e in events if e.type == EventType.ERROR)
+    assert any(
+        "Switched to fallback model" in e.content
+        for e in events
+        if e.type == EventType.ERROR
+    )
     assert any(e.type == EventType.TEXT and "fallback ok" in e.content for e in events)
     assert any(e.type == EventType.ERROR and e.status == "fallback" for e in events)
 
@@ -640,7 +698,13 @@ async def test_compact_resume_and_permission_events_have_status():
         _make_chunks(content="a", finish_reason="length"),
         _make_chunks(
             content="trying write",
-            tool_calls=[{"name": "write", "args": {"file_path": "/tmp/x", "content": "y"}, "id": "tc_1"}],
+            tool_calls=[
+                {
+                    "name": "write",
+                    "args": {"file_path": "/tmp/x", "content": "y"},
+                    "id": "tc_1",
+                }
+            ],
         ),
     )
 
@@ -687,5 +751,39 @@ async def test_bash_search_redirect_has_generic_error_status():
 
     assert any(
         e.type == EventType.ERROR and e.status == "generic_error"
+        for e in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_bash_search_redirect_can_be_disabled_by_tool_metadata():
+    @tool
+    def bash(command: str, description: str = "") -> str:
+        """Execute a shell command."""
+        return "listing ok"
+
+    bash.metadata = {"is_readonly": False, "allow_discovery_commands": True}
+
+    model = _make_model(
+        _make_chunks(
+            content="searching",
+            tool_calls=[{"name": "bash", "args": {"command": "find . -type f"}, "id": "tc_1"}],
+        ),
+        _make_chunks(content="done"),
+    )
+
+    events = await _async_collect(
+        agent_loop(
+            user_input="search",
+            tools=[bash],
+            system_prompt="Use tools correctly.",
+            model=model,
+            permission_context=PermissionContext(mode="bypassPermissions"),
+        )
+    )
+
+    assert any(e.type == EventType.TOOL_RESULT and e.content == "listing ok" for e in events)
+    assert not any(
+        e.type == EventType.ERROR and "Do not use Bash for file discovery" in e.content
         for e in events
     )

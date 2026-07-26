@@ -20,6 +20,7 @@ class AgentEvent(BaseModel):
     content: str = ""
     phase: str = ""
     status: str = ""
+    error_code: str = ""
     tool_name: str = ""
     tool_call_id: str = ""
     tool_args: dict[str, object] = Field(default_factory=dict)

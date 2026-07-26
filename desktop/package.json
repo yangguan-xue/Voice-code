@@ -1,0 +1,44 @@
+{
+  "name": "voice-code-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "lint": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "runtime:layout": "node scripts/build-runtime.mjs --output src-tauri/resources/runtime",
+    "runtime:launchers": "node scripts/build-runtime.mjs --output src-tauri/resources/runtime --with-launchers",
+    "runtime:install": "node scripts/build-runtime.mjs --output src-tauri/resources/runtime --install",
+    "tauri": "tauri",
+    "tauri:build:runtime": "pnpm runtime:install && tauri build --config src-tauri/tauri.macos.runtime.conf.json",
+    "tauri:build:windows": "tauri build --config src-tauri/tauri.windows.conf.json",
+    "tauri:build:windows:runtime": "pnpm runtime:install && tauri build --config src-tauri/tauri.windows.runtime.conf.json"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.1",
+    "@vitejs/plugin-react": "latest",
+    "lucide-react": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "react-markdown": "^10.1.0",
+    "rehype-sanitize": "^6.0.0",
+    "remark-gfm": "^4.0.1",
+    "typescript": "latest",
+    "vite": "latest"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "latest",
+    "@testing-library/jest-dom": "latest",
+    "@testing-library/react": "latest",
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "jsdom": "latest",
+    "playwright": "^1.61.1",
+    "vitest": "latest"
+  },
+  "packageManager": "pnpm@10.9.2"
+}

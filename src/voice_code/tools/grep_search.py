@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import shutil
-from pathlib import Path
 
 from langchain_core.tools import tool
+
+from voice_code.security import WorkspaceBoundaryError, resolve_workspace_path
 
 _MAX_OUTPUT_LINES = 500
 _EXACT_PATH_HINT = "Report the exact missing path and do not assume a similar file or directory."
@@ -67,7 +68,10 @@ def grep(
             " Please install it to use Grep.</tool_use_error>"
         )
 
-    target = Path(path).expanduser().resolve()
+    try:
+        target = resolve_workspace_path(path)
+    except WorkspaceBoundaryError as exc:
+        return f"<tool_use_error>Error: {exc}</tool_use_error>"
     if not target.exists():
         return (
             "<tool_use_error>Error: Path not found: "
@@ -99,13 +103,8 @@ def grep(
     args.append(pattern)
     args.append(str(target))
 
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-    output, rc = loop.run_until_complete(_run_rg(args, str(Path.cwd())))
+    search_cwd = target.parent if target.is_file() else target
+    output, rc = asyncio.run(_run_rg(args, str(search_cwd)))
 
     if rc == 1 and not output:
         return "No matches found"

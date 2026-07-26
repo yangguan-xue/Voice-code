@@ -73,7 +73,11 @@ class MemoryService:
         return get_entry(entry_id, scope, self.project_root if scope == "project" else None)
 
     def remember(
-        self, text: str, session_id: str = "", entry_type: str = "reference"
+        self,
+        text: str,
+        session_id: str = "",
+        entry_type: str = "reference",
+        scope: str | None = None,
     ) -> MemoryEntry:
         import hashlib
         from datetime import datetime
@@ -82,11 +86,16 @@ class MemoryService:
         hash_input = f"{text}{timestamp.isoformat()}"
         entry_id = "mem_" + hashlib.sha256(hash_input.encode()).hexdigest()[:12]
 
+        selected_scope = scope or ("project" if self.project_root else "user")
+        if selected_scope not in {"user", "project"}:
+            raise ValueError("Memory scope must be user or project")
+        if selected_scope == "project" and not self.project_root:
+            raise ValueError("Project memory requires a project root")
         entry = MemoryEntry(
             id=entry_id,
             name=text[:60],
             type=MemoryType(entry_type),
-            scope=MemoryScope.USER if not self.project_root else MemoryScope.PROJECT,
+            scope=MemoryScope(selected_scope),
             description=text[:200],
             content=text,
             created_at=timestamp,

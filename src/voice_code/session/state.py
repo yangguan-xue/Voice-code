@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
+import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
+from voice_code.platform_fs import best_effort_private_permissions
 from voice_code.session.manager import get_session_path
+from voice_code.telemetry import ErrorCode, EventName
+
+logger = logging.getLogger(__name__)
 
 CURRENT_SESSION_STATE_SCHEMA_VERSION = 1
 SessionStateSource = Literal["loaded", "missing", "invalid"]
@@ -22,6 +29,13 @@ def _derive_project_path(cwd: str) -> str:
     raw = cwd.strip()
     if not raw:
         return ""
+    if raw.startswith("/"):
+        path = PurePosixPath(raw)
+        if path.name == "new" and path.parent.name:
+            return str(path.parent)
+        if path.name == "src" and path.parent.name == "new" and path.parent.parent.name:
+            return str(path.parent.parent)
+        return str(path)
     path = Path(raw)
     if path.name == "new" and path.parent.name:
         return str(path.parent)
@@ -98,7 +112,28 @@ def build_session_runtime_state(
 def save_session_state(state: SessionRuntimeState) -> None:
     path = get_session_state_path(state.session_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+    best_effort_private_permissions(path.parent, directory=True)
+    payload = json.dumps(state.to_dict(), ensure_ascii=False, indent=2)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        best_effort_private_permissions(temporary_path)
+        temporary_path.replace(path)
+        logger.info(
+            "session state saved",
+            extra={
+                "event": EventName.SESSION_STATE_SAVED,
+                "session_id": state.session_id,
+                "operation": "save",
+                "outcome": "success",
+            },
+        )
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def load_session_state(
@@ -116,14 +151,17 @@ def load_session_state(
         title=fallback_title,
     )
     if not path.exists():
+        _log_session_load(session_id, "missing")
         return SessionStateLoadResult(state=fallback_state, source="missing")
 
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
+        _log_session_load(session_id, "invalid")
         return SessionStateLoadResult(state=fallback_state, source="invalid")
 
     if not isinstance(payload, dict):
+        _log_session_load(session_id, "invalid")
         return SessionStateLoadResult(state=fallback_state, source="invalid")
 
     cwd = str(payload.get("cwd", "")).strip() or fallback_cwd
@@ -155,4 +193,19 @@ def load_session_state(
         ui_state=dict(payload.get("ui_state", {}) or {}),
         permission_state=dict(payload.get("permission_state", {}) or {}),
     )
+    _log_session_load(session_id, "loaded")
     return SessionStateLoadResult(state=state, source="loaded")
+
+
+def _log_session_load(session_id: str, outcome: SessionStateSource) -> None:
+    extra: dict[str, object] = {
+        "event": EventName.SESSION_STATE_LOADED,
+        "session_id": session_id,
+        "operation": "load",
+        "outcome": outcome,
+    }
+    if outcome == "invalid":
+        extra["error_code"] = ErrorCode.SESSION_STATE_CORRUPT
+        logger.warning("session state invalid", extra=extra)
+        return
+    logger.info("session state loaded", extra=extra)

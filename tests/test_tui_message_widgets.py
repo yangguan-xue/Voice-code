@@ -43,7 +43,7 @@ def test_summarize_tool_args_prioritizes_pattern_over_path():
     summary = _summarize_tool_args(
         {
             "pattern": "**/*.md",
-            "path": "/Users/example/work/workspace/programs/reasoning",
+            "path": "/Users/example/work/workspace/workspace/voice-code",
         }
     )
 
@@ -55,7 +55,7 @@ def test_summarize_tool_args_shows_command_and_collapses_extra_fields():
     summary = _summarize_tool_args(
         {
             "command": "rg --files src",
-            "cwd": "/Users/example/work/workspace/programs/reasoning",
+            "cwd": "/Users/example/work/workspace/workspace/voice-code",
             "limit": 50,
         }
     )

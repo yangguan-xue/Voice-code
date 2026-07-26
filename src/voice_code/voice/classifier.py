@@ -44,14 +44,14 @@ class CommandClassifier:
 
         # Layer 0: heuristic ignore for noise
         if self._is_noise(cleaned):
-            logger.info("Classifier: heuristic ignore: %s", cleaned)
+            logger.info("Classifier: heuristic ignore")
             return CommandDecision(kind=CommandKind.IGNORE, text=cleaned)
 
         # Layer 1: keyword matching for control commands
         # 精确短语 → 文本本身就是控制命令
         if cleaned in _EXACT_CONTROL_PHRASES:
             control_name = CONTROL_KEYWORDS[cleaned]
-            logger.info("Classifier: exact control: %s -> %s", cleaned, control_name)
+            logger.info("Classifier: exact control -> %s", control_name)
             return CommandDecision(
                 kind=CommandKind.CONTROL_COMMAND,
                 text=cleaned,
@@ -61,7 +61,7 @@ class CommandClassifier:
         # 含关键词的短语 → 只匹配"停止"/"别读了"这类操作词
         for keyword, control_name in CONTROL_KEYWORDS.items():
             if keyword in cleaned and keyword not in _EXACT_CONTROL_PHRASES:
-                logger.info("Classifier: matched control keyword: %s -> %s", keyword, control_name)
+                logger.info("Classifier: matched control keyword -> %s", control_name)
                 return CommandDecision(
                     kind=CommandKind.CONTROL_COMMAND,
                     text=cleaned,
@@ -131,5 +131,5 @@ class CommandClassifier:
             return CommandKind.IGNORE
 
         # 模型未按要求输出，有文本则当作 agent_command
-        logger.info("Classifier: gatekeeper '%s', defaulting to agent_command", result[:60])
+        logger.info("Classifier: invalid gatekeeper response, defaulting to agent_command")
         return CommandKind.AGENT_COMMAND

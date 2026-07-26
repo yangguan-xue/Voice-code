@@ -12,27 +12,35 @@ class AgentDefinition:
     agent_type: str
     when_to_use: str
     system_prompt: str
+    purpose: str = ""
     allowed_tools: list[str] | None = None
     disallowed_tools: list[str] | None = None
     model: str | None = None
     max_turns: int | None = None
     background: bool = False
+    background_capable: bool = True
+    permission_mode: str | None = None
+    result_schema: str = "summary"
+    allow_subagents: bool = False
 
 
 _DEFINITIONS: dict[str, AgentDefinition] = {
     "general-purpose": AgentDefinition(
         agent_type="general-purpose",
         when_to_use="通用子任务执行",
+        purpose="implementation",
         system_prompt="你是一个通用子 agent。独立完成被委派的任务，简洁汇报事实与结论。",
     ),
     "researcher": AgentDefinition(
         agent_type="researcher",
         when_to_use="信息检索、代码调查、范围摸排",
+        purpose="research",
         system_prompt="你是一个研究型子 agent。优先调查、总结证据、给出明确发现，不做无关改动。",
     ),
     "implementer": AgentDefinition(
         agent_type="implementer",
         when_to_use="定向代码实现与修改",
+        purpose="implementation",
         system_prompt=(
             "你是一个实现型子 agent。根据任务描述进行实现，"
             "必要时读写代码并简洁汇报结果。"
@@ -41,8 +49,11 @@ _DEFINITIONS: dict[str, AgentDefinition] = {
     "reviewer": AgentDefinition(
         agent_type="reviewer",
         when_to_use="代码审查与风险识别",
+        purpose="review",
         system_prompt="你是一个审查型子 agent。优先发现问题、风险和回归，不做无关实现。",
         disallowed_tools=["write", "edit"],
+        permission_mode="dontAsk",
+        result_schema="findings",
     ),
 }
 
@@ -62,11 +73,19 @@ def get_agent_definition(agent_type: str) -> AgentDefinition:
 def filter_tools_for_definition(
     tools: list[BaseTool],
     definition: AgentDefinition,
+    *,
+    background: bool = False,
 ) -> list[BaseTool]:
+    globally_denied = {"agent"} if not definition.allow_subagents else set()
+    if background:
+        globally_denied.add("ask_user")
     if definition.allowed_tools is not None:
         allowed = set(definition.allowed_tools)
-        return [tool for tool in tools if tool.name in allowed]
+        return [
+            tool for tool in tools
+            if tool.name in allowed and tool.name not in globally_denied
+        ]
     if definition.disallowed_tools is not None:
-        denied = set(definition.disallowed_tools)
+        denied = set(definition.disallowed_tools) | globally_denied
         return [tool for tool in tools if tool.name not in denied]
-    return list(tools)
+    return [tool for tool in tools if tool.name not in globally_denied]

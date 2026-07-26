@@ -1,1 +1,5 @@
-# 空包标记
+from __future__ import annotations
+
+from importlib.metadata import version
+
+__version__ = version("voice-code")

@@ -2,15 +2,11 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from langchain_core.tools import tool
 
+from voice_code.audit import record_audit_event
+from voice_code.security import WorkspaceBoundaryError, resolve_workspace_path
 from voice_code.tools.cache import mark_as_read, was_read
-
-
-def _resolve(file_path: str) -> Path:
-    return Path(file_path).expanduser().resolve()
 
 
 @tool
@@ -30,7 +26,10 @@ def write(file_path: str, content: str) -> str:
     Returns:
         Confirmation message indicating success or error.
     """
-    path = _resolve(file_path)
+    try:
+        path = resolve_workspace_path(file_path)
+    except WorkspaceBoundaryError as exc:
+        return f"<tool_use_error>Error: {exc}</tool_use_error>"
 
     # Check read-before-write for existing files
     if path.exists():
@@ -53,6 +52,14 @@ def write(file_path: str, content: str) -> str:
     except OSError as e:
         return f"<tool_use_error>Error writing file: {e}</tool_use_error>"
 
+    record_audit_event(
+        event_type="bash.write",
+        actor="agent",
+        resource_id=f"file:{path.name}",
+        outcome="created" if is_new else "updated",
+        rule="file_write_tool",
+        approval_result="recorded",
+    )
     mark_as_read(file_path)
 
     action = "created" if is_new else "updated"

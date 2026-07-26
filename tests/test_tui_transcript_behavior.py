@@ -35,12 +35,22 @@ def test_permission_denied_event_has_status():
 
 
 def test_compact_event_has_compact_status():
-    event = AgentEvent(type=EventType.ERROR, turn=1, content="compacted", phase="compacting", status="compact")
+    event = AgentEvent(
+        type=EventType.ERROR,
+        turn=1,
+        content="compacted",
+        phase="compacting",
+        status="compact",
+    )
     assert event.status == "compact"
 
 
 def test_tool_failure_has_error_text():
-    entry = TurnEntry(kind="tool_result", text="<tool_use_error>not found</tool_use_error>", tool_call_id="c1")
+    entry = TurnEntry(
+        kind="tool_result",
+        text="<tool_use_error>not found</tool_use_error>",
+        tool_call_id="c1",
+    )
     assert "<tool_use_error>" in entry.text
 
 

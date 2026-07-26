@@ -1,4 +1,4 @@
-"""压缩边界标记 — cc-haha 的 compact boundary message"""
+"""压缩边界标记 — reference implementation 的 compact boundary message"""
 
 from __future__ import annotations
 

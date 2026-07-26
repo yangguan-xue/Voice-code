@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import queue
 from types import SimpleNamespace
 
 import pytest
@@ -160,6 +161,49 @@ def test_render_runtime_thinking_state_shows_executing_tools_when_no_live_text()
     assert status_calls[-1] == ("executing", 2)
 
 
+@pytest.mark.asyncio
+async def test_goal_event_queue_renders_text_and_keeps_turn_open():
+    screen = AgentScreen()
+    screen._metric_output_chars = 0
+    screen._current_turn_has_live_thinking = False
+    previews: list[tuple[str, bool]] = []
+    thinking: list[str] = []
+    status_calls: list[tuple[str, int]] = []
+    finished: list[bool] = []
+
+    screen._set_streaming_preview = lambda text: previews.append((text, True))  # type: ignore[method-assign]
+    screen._set_streaming_preview_final = lambda text: previews.append((text, False))  # type: ignore[method-assign]
+    screen._set_streaming_thinking = lambda text, **_kwargs: thinking.append(text)  # type: ignore[method-assign]
+    screen._update_statusbar = (  # type: ignore[method-assign]
+        lambda phase="", tool_count=0: status_calls.append((phase, tool_count))
+    )
+    screen._is_near_bottom = lambda: True  # type: ignore[method-assign]
+    screen._scroll_to_bottom = lambda **_kwargs: None  # type: ignore[method-assign]
+    screen._append_tool_call = lambda _event: None  # type: ignore[method-assign]
+    screen._append_tool_result = lambda _event: None  # type: ignore[method-assign]
+    screen._route_error_event = lambda _event: None  # type: ignore[method-assign]
+    screen._finish_turn = lambda: finished.append(True)  # type: ignore[method-assign]
+
+    event_queue: queue.Queue[AgentEvent | Exception | None] = queue.Queue()
+    event_queue.put(AgentEvent(type=EventType.REASONING, turn=1, content="checking files"))
+    event_queue.put(AgentEvent(type=EventType.TEXT, turn=1, content="visible progress"))
+    event_queue.put(AgentEvent(type=EventType.FINISH, turn=1, finish_reason="completed"))
+    event_queue.put(None)
+
+    result = await screen._consume_agent_event_queue(
+        event_queue,
+        finish_turn_on_finish=False,
+    )
+
+    assert result == "visible progress"
+    assert screen._metric_output_chars == len("visible progress")
+    assert any("checking files" in item for item in thinking)
+    assert ("visible progress", True) in previews
+    assert ("visible progress", False) in previews
+    assert status_calls
+    assert finished == []
+
+
 def test_resume_into_current_view_reuses_resume_semantics(monkeypatch: pytest.MonkeyPatch):
     screen = AgentScreen()
     screen._turns = []
@@ -231,7 +275,7 @@ def test_resume_into_current_view_restores_runtime_metadata(monkeypatch: pytest.
         transcript_writer=SimpleNamespace(),
         runtime_state=build_session_runtime_state(
             session_id="session-xyz",
-            cwd="/Users/example/programs/reasoning/new",
+            cwd="/Users/example/workspace/voice-code",
             title="优化 agent UI 观感",
         ),
         state_source="loaded",
@@ -247,10 +291,10 @@ def test_resume_into_current_view_restores_runtime_metadata(monkeypatch: pytest.
     )
 
     assert screen._resume_into_current_view("session-xyz") is True
-    assert screen._cwd == "/Users/example/programs/reasoning/new"
-    assert "cwd: /Users/example/programs/reasoning/new" in screen.sub_title
+    assert screen._cwd == "/Users/example/workspace/voice-code"
+    assert "cwd: /Users/example/workspace/voice-code" in screen.sub_title
     assert meta_messages[-1] == (
-        "已恢复 session session-xyz  ·  标题：优化 agent UI 观感  ·  项目：reasoning"
+        "已恢复 session session-xyz  ·  标题：优化 agent UI 观感  ·  项目：voice-code"
     )
 
 
@@ -294,7 +338,7 @@ def test_resume_into_current_view_restores_subagent_runtime_state(
         transcript_writer=SimpleNamespace(),
         runtime_state=build_session_runtime_state(
             session_id="session-xyz",
-            cwd="/Users/example/programs/reasoning/new",
+            cwd="/Users/example/workspace/voice-code",
             title="优化 agent UI 观感",
         ),
         state_source="loaded",
@@ -382,7 +426,7 @@ def test_resume_into_current_view_restores_ui_and_compact_state(
         transcript_writer=SimpleNamespace(),
         runtime_state=build_session_runtime_state(
             session_id="session-xyz",
-            cwd="/Users/example/programs/reasoning/new",
+            cwd="/Users/example/workspace/voice-code",
             title="恢复 UI 状态",
         ),
         state_source="loaded",
@@ -417,10 +461,10 @@ def test_resume_into_current_view_restores_ui_and_compact_state(
 def test_build_runtime_state_snapshot_includes_tool_ui_and_compact_metrics():
     screen = AgentScreen()
     screen._session_id = "session-xyz"
-    screen._cwd = "/Users/example/programs/reasoning/new"
+    screen._cwd = "/Users/example/workspace/voice-code"
     screen._runtime_state = build_session_runtime_state(
         session_id="session-xyz",
-        cwd="/Users/example/programs/reasoning/new",
+        cwd="/Users/example/workspace/voice-code",
     )
     screen._model = SimpleNamespace(model_name="voice-code-pro")
     screen._sticky_follow = False

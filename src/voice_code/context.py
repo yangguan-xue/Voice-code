@@ -1,4 +1,4 @@
-"""上下文管理 — CLAUDE.md 加载 + git 状态快照"""
+"""上下文管理 — AGENTS.md 加载 + git 状态快照"""
 
 from __future__ import annotations
 
@@ -10,10 +10,10 @@ logger = logging.getLogger(__name__)
 
 _MAX_STATUS_CHARS = 2000
 
-_CLAUDE_MD_FILES = [
-    ("CLAUDE.md", "project instructions"),
-    (".claude/CLAUDE.md", "project instructions"),
-    ("CLAUDE.local.md", "local instructions"),
+_PROJECT_INSTRUCTION_FILES = [
+    ("AGENTS.md", "project instructions"),
+    (".agents/AGENTS.md", "project instructions"),
+    ("AGENTS.local.md", "local instructions"),
 ]
 
 
@@ -77,29 +77,30 @@ async def get_git_status(cwd: str = "") -> str | None:
     )
 
 
-async def load_claude_md(cwd: str = "") -> str:
-    """加载当前目录的 CLAUDE.md 文件。
+async def load_project_instructions(cwd: str = "") -> str:
+    """加载当前目录的 AGENTS.md 文件。
 
     按优先级加载并拼接:
-      - CLAUDE.md
-      - .claude/CLAUDE.md
-      - CLAUDE.local.md
+      - AGENTS.md
+      - .agents/AGENTS.md
+      - AGENTS.local.md
     """
     base = Path(cwd) if cwd else Path.cwd()
     parts: list[str] = []
 
-    for rel_path, desc in _CLAUDE_MD_FILES:
+    for rel_path, desc in _PROJECT_INSTRUCTION_FILES:
         full_path = base / rel_path
         if not full_path.is_file():
             continue
         try:
             content = full_path.read_text(encoding="utf-8").strip()
             if content:
+                display_path = full_path.as_posix()
                 parts.append(
-                    f"Contents of {full_path} ({desc}):\n\n{content}"
+                    f"Contents of {display_path} ({desc}):\n\n{content}"
                 )
-        except OSError as e:
-            logger.warning("Failed to read %s: %s", full_path, e)
+        except OSError:
+            logger.error("Failed to read workspace instruction file")
 
     return "\n\n".join(parts)
 
@@ -108,17 +109,17 @@ async def get_context(cwd: str = "") -> dict[str, str]:
     """获取完整上下文。
 
     Returns:
-        {"claudeMd": str, "gitStatus": str, "currentDate": str}
+        {"projectInstructions": str, "gitStatus": str, "currentDate": str}
     """
     import datetime
 
-    claude_md, git_status = await asyncio.gather(
-        load_claude_md(cwd),
+    project_instructions, git_status = await asyncio.gather(
+        load_project_instructions(cwd),
         get_git_status(cwd),
     )
 
     return {
-        "claudeMd": claude_md,
+        "projectInstructions": project_instructions,
         "gitStatus": git_status or "",
         "currentDate": f"Today's date is {datetime.date.today().isoformat()}.",
     }

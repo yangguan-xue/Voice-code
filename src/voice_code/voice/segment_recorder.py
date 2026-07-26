@@ -150,7 +150,7 @@ class SegmentRecorder:
                 try:
                     self._raw_frame_callback(frame)
                 except Exception:
-                    logger.exception("SegmentRecorder: raw frame callback error")
+                    logger.error("SegmentRecorder: raw frame callback error")
 
             # VAD 分段处理
             if self._recording:
@@ -246,7 +246,7 @@ class SegmentRecorder:
                         try:
                             self._callback(segment_bytes, self._speech_start_time)
                         except Exception:
-                            logger.exception("SegmentRecorder: callback error")
+                            logger.error("SegmentRecorder: callback error")
                     return True
                 else:
                     logger.debug(

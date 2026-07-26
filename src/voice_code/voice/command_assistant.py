@@ -128,7 +128,7 @@ class CommandAssistant:
             try:
                 self._tool_model = self._model.bind_tools(self._tools)  # type: ignore[union-attr]
             except Exception:
-                logger.exception("CommandAssistant: bind_tools failed, falling back to plain model")
+                logger.error("CommandAssistant: bind_tools failed, falling back to plain model")
                 self._tool_model = None
 
     async def decide_user_turn(self, text: str) -> SupervisorDecision:
@@ -197,7 +197,7 @@ class CommandAssistant:
         try:
             response = await self._invoke_with_optional_tools(system_prompt, payload)
         except Exception:
-            logger.exception("CommandAssistant: model invocation failed during %s phase", phase)
+            logger.error("CommandAssistant: model invocation failed during %s phase", phase)
             return self._fail(SUPERVISOR_FAILED_TEXT, f"{phase}_invoke_error")
 
         raw = self._extract_text(response)
@@ -206,17 +206,13 @@ class CommandAssistant:
     def _parse_decision(self, raw: str, *, phase: str) -> SupervisorDecision:
         candidate = self._extract_json(raw)
         if candidate is None:
-            logger.warning("CommandAssistant: invalid JSON during %s phase: %s", phase, raw[:200])
+            logger.warning("CommandAssistant: invalid JSON during %s phase", phase)
             return self._fail(SUPERVISOR_FAILED_TEXT, f"{phase}_invalid_json")
 
         try:
             data = json.loads(candidate)
         except json.JSONDecodeError:
-            logger.warning(
-                "CommandAssistant: JSON decode failed during %s phase: %s",
-                phase,
-                candidate[:200],
-            )
+            logger.warning("CommandAssistant: JSON decode failed during %s phase", phase)
             return self._fail(SUPERVISOR_FAILED_TEXT, f"{phase}_json_decode_error")
 
         action_text = str(data.get("action", "")).strip().lower()
@@ -325,7 +321,7 @@ class CommandAssistant:
             else:
                 result = tool_.invoke(args)  # type: ignore[misc]
         except Exception:
-            logger.exception("CommandAssistant: tool %s failed", name)
+            logger.error("CommandAssistant: tool %s failed", name)
             return f"Tool {name} failed."
         return str(result)
 

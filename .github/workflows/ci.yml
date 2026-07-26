@@ -1,32 +1,163 @@
 name: CI
 
 on:
+  pull_request:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: read
 
 jobs:
-  lint-and-test:
-    runs-on: ubuntu-latest
+  lint:
+    name: lint (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.12", "3.13"]
-
+        os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+      - uses: actions/setup-python@v6
         with:
-          python-version: ${{ matrix.python-version }}
-      - uses: astral-sh/setup-uv@v3
+          python-version: "3.12"
+      - run: uv sync --dev
+      - run: uv run ruff check .
 
-      - run: uv sync --group dev
+  types:
+    name: types (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --dev
+      - run: uv run mypy src tests
 
-      - name: Lint
-        run: uv run ruff check src/
+  tests:
+    name: tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --dev
+      - run: uv run pytest tests/ -q
 
-      - name: Type check (skipped)
-        run: echo "mypy skipped — pre-existing type issues"
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    needs: tests
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --dev
+      - run: uv add --dev pytest-cov
+      - run: uv run pytest tests/ --cov=voice_code --cov-report=term --cov-report=xml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
 
-      - name: Test
-        run: uv run pytest tests/ -v --ignore=tests/test_voice_supervisor.py
+  secret-scan:
+    name: secret-scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: uvx detect-secrets scan --all-files --exclude-files '.venv|uv.lock' --force-use-all-plugins > .secrets.baseline
+      - run: uvx detect-secrets audit .secrets.baseline --report --fail-on-unaudited
+      - name: scan token patterns
+        run: |
+          if git grep -nE '(api_key|Authorization|token)\s*[=:]\s*["'"'][^"'"'<>]{12,}["'"']' -- ':!uv.lock' ':!.env.example'; then
+            exit 1
+          fi
+
+  license-scan:
+    name: license-scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --dev
+      - run: uvx pip-licenses --fail-on 'GPL;AGPL;LGPL;SSPL;BUSL' --format=markdown --with-authors --with-urls --output-file license-report.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: license-report
+          path: license-report.md
+
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    needs: [types, tests, coverage, secret-scan, license-scan]
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --dev
+      - run: uv build
+      - run: shasum -a 256 dist/* > checksum.txt
+      - run: uvx cyclonedx-py environment --output-file sbom.cdx.json
+      - run: uvx sigstore sign --yes dist/*.whl
+        if: github.event_name != 'pull_request'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-artifacts
+          path: |
+            dist/*
+            checksum.txt
+            sbom.cdx.json
+            dist/*.sigstore*
+          if-no-files-found: error
+
+  smoke:
+    name: smoke
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v5
+        with:
+          name: release-artifacts
+          path: artifacts
+      - run: uv sync --dev --extra milvus
+      - run: uv run python .github/scripts/ci_smoke.py
+      - run: uv run reasoning --plain --help

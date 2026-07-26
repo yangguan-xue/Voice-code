@@ -2,19 +2,14 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from langchain_core.tools import tool
 
+from voice_code.security import WorkspaceBoundaryError, resolve_workspace_path
 from voice_code.tools.cache import mark_as_read
 
 _MAX_LINES = 2000
 _MAX_OUTPUT_CHARS = 50_000
 _EXACT_PATH_HINT = "Report the exact missing path and do not assume a similar file or directory."
-
-
-def _resolve(file_path: str) -> Path:
-    return Path(file_path).expanduser().resolve()
 
 
 @tool
@@ -33,7 +28,10 @@ def read(file_path: str, offset: int = 1, limit: int = 2000) -> str:
         The file content with line numbers in the format:
             <line>: <content>
     """
-    path = _resolve(file_path)
+    try:
+        path = resolve_workspace_path(file_path)
+    except WorkspaceBoundaryError as exc:
+        return f"<tool_use_error>Error: {exc}</tool_use_error>"
 
     if not path.exists():
         return (

@@ -42,12 +42,12 @@ def rerank_candidates(
     query: str,
     candidates: list[dict],
     top_k: int = 5,
+    min_score: float | None = None,
 ) -> list[dict]:
     query_terms = _extract_terms(query)
     query_cjk = _cjk_chars(query)
 
-    logger.debug("rerank: query='%s' terms=%s cjk=%s candidates=%d",
-                 query, query_terms, query_cjk, len(candidates))
+    logger.debug("rerank: candidates=%d", len(candidates))
 
     scored: list[tuple[float, dict]] = []
     for c in candidates:
@@ -55,12 +55,16 @@ def rerank_candidates(
         scored.append((score, c))
 
     scored.sort(key=lambda x: x[0], reverse=True)
-    result = [c for _, c in scored[:top_k]]
+    selected = scored if min_score is None else [item for item in scored if item[0] >= min_score]
+    result = []
+    for score, candidate in selected[:top_k]:
+        enriched = dict(candidate)
+        enriched["_memory_score"] = round(score, 3)
+        result.append(enriched)
     logger.debug(
-        "rerank: top %d scores=[%s] names=[%s]",
+        "rerank: top %d scores=[%s]",
         top_k,
         ", ".join(f"{s:.1f}" for s, _ in scored[:top_k]),
-        ", ".join(c.get("name", "?")[:30] for _, c in scored[:top_k]),
     )
     return result
 
@@ -121,6 +125,12 @@ def _compute_score(
         score += 2.0
     elif mem_type == "reference":
         score += 1.0
+
+    # ── Content keyword match bonus ──
+    for term in query_terms:
+        if term in content:
+            score += 1.0
+            break
 
     # ── Penalize generic template memories ──
     if name.startswith("记住，"):

@@ -15,6 +15,7 @@ from voice_code.agent.loop import agent_loop
 from voice_code.agent.types import AgentEvent, EventType
 from voice_code.permissions import PermissionContext
 from voice_code.runtime import RuntimeBootstrap, bootstrap_runtime
+from voice_code.security import configure_workspace_root
 from voice_code.voice.types import SUMMARY_FALLBACK_CHARS
 
 logger = logging.getLogger(__name__)
@@ -32,12 +33,27 @@ class AgentBridge:
       - 传递 transcript_writer 给 agent_loop() 以正确记录
     """
 
-    def __init__(self, profile: str | None = None, summary_model: ChatOpenAI | None = None) -> None:
+    def __init__(
+        self,
+        profile: str | None = None,
+        summary_model: ChatOpenAI | None = None,
+        workspace: str | None = None,
+        permission_context: PermissionContext | None = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        model_name: str | None = None,
+        active_profile_name: str | None = None,
+    ) -> None:
         self._profile = profile
         self._summary_model = summary_model
+        self._workspace = workspace
+        self._api_key = api_key
+        self._base_url = base_url
+        self._model_name = model_name
+        self._active_profile_name = active_profile_name
         self._runtime: RuntimeBootstrap | None = None
         self._abort_signal = AbortSignal()
-        self._perm_ctx = PermissionContext(mode="bypassPermissions")
+        self._perm_ctx = permission_context or PermissionContext(mode="default")
         self._resume_messages: list[BaseMessage] | None = None
         self._turn_lock = asyncio.Lock()
         self._event_callback: Callable[[AgentEvent], Coroutine[None, None, None]] | None = None
@@ -49,11 +65,24 @@ class AgentBridge:
 
     async def start(self) -> None:
         """初始化 runtime。"""
-        self._runtime = await bootstrap_runtime(profile=self._profile)
+        self._runtime = await bootstrap_runtime(
+            profile=self._profile,
+            workspace=self._workspace,
+            api_key=self._api_key,
+            base_url=self._base_url,
+            model_name=self._model_name,
+            active_profile_name=self._active_profile_name,
+        )
+        self._perm_ctx.workspace_root = self._runtime.cwd
         self._resume_messages = None
         logger.info("AgentBridge runtime ready: %s", self._runtime.session_id)
 
-    async def run_turn(self, text: str) -> str:
+    async def run_turn(
+        self,
+        text: str,
+        *,
+        context_messages: list[BaseMessage] | None = None,
+    ) -> str:
         """执行一轮 agent 任务，返回最终 assistant 文本。
 
         维护会话连续性：每轮结束后回读 transcript，
@@ -71,20 +100,26 @@ class AgentBridge:
             return ""
 
         async with self._turn_lock:
+            configure_workspace_root(self._runtime.cwd)
             self._abort_signal.clear()
 
-            result = await self._execute_turn(text)
+            result = await self._execute_turn(text, context_messages=context_messages)
 
             # 回读 transcript，保留会话连续性
             if self._runtime.transcript_writer is not None:
                 try:
                     self._resume_messages = self._runtime.transcript_writer.read_all_messages()
                 except Exception:
-                    logger.exception("AgentBridge: failed to read transcript messages")
+                    logger.error("AgentBridge: failed to read transcript messages")
 
             return result
 
-    async def _execute_turn(self, text: str) -> str:
+    async def _execute_turn(
+        self,
+        text: str,
+        *,
+        context_messages: list[BaseMessage] | None = None,
+    ) -> str:
         """执行单轮 agent_loop()，收集最终 assistant 文本。"""
         if not self._runtime:
             raise RuntimeError("AgentBridge not started")
@@ -96,6 +131,8 @@ class AgentBridge:
         finish_reason = "unknown"
         event_counts: dict[str, int] = {}
 
+        resume_messages = self._merge_resume_messages(context_messages)
+
         try:
             async with asyncio.timeout(300):
                 async for event in agent_loop(
@@ -105,9 +142,11 @@ class AgentBridge:
                     model=self._runtime.model,
                     permission_context=self._perm_ctx,
                     abort_signal=self._abort_signal,
-                    resume_messages=self._resume_messages,
+                    resume_messages=resume_messages,
                     transcript_writer=self._runtime.transcript_writer,
                     fallback_model=self._runtime.fallback_model,
+                    memory_service=self._runtime.memory_service,
+                    memory_project_key=self._runtime.memory_project_key,
                 ):
                     etype = event.type.name
                     event_counts[etype] = event_counts.get(etype, 0) + 1
@@ -117,7 +156,7 @@ class AgentBridge:
                         try:
                             await self._event_callback(event)
                         except Exception:
-                            logger.exception("AgentBridge: event callback error")
+                            logger.error("AgentBridge: event callback error")
 
                     if event.type == EventType.TEXT:
                         final_text_parts.append(str(event.content))
@@ -133,7 +172,10 @@ class AgentBridge:
 
                     elif event.type == EventType.ERROR:
                         # 工具层 / compaction / fallback 通知，不是致命错误
-                        logger.info("AgentBridge: event ERROR: %s", str(event.content)[:100])
+                        logger.info(
+                            "AgentBridge received a recoverable error event",
+                            extra={"outcome": "degraded"},
+                        )
 
         except TimeoutError:
             logger.error("AgentBridge: agent turn timed out")
@@ -151,12 +193,24 @@ class AgentBridge:
             )
 
         logger.info(
-            "AgentBridge: events=%s, finish=%s, result (%d chars): %s",
-            event_counts, finish_reason, len(result), result[:100],
+            "AgentBridge finished: events=%s, finish=%s, result_chars=%d",
+            event_counts,
+            finish_reason,
+            len(result),
         )
         if has_error:
             raise RuntimeError(f"agent turn failed: {error_msg}")
         return result
+
+    def _merge_resume_messages(
+        self,
+        context_messages: list[BaseMessage] | None,
+    ) -> list[BaseMessage] | None:
+        if not context_messages:
+            return self._resume_messages
+        if not self._resume_messages:
+            return list(context_messages)
+        return [*context_messages, *self._resume_messages]
 
     def interrupt(self) -> None:
         """中断当前 agent 任务。"""
@@ -189,7 +243,7 @@ class AgentBridge:
             ph = f"\x00PROTECT_{len(placeholders)}\x00"
             placeholders[ph] = tok
             return ph
-        # 保护首字母大写的单词（Claude, OpenAI, Codex...）
+        # 保护首字母大写的单词（OpenAI, Codex...）
         text = re.sub(r'\b[A-Z][a-z]+([A-Z][a-z]+)*\b', _protect, text)
         # 保护连续 2-5 个大写字母缩写
         text = re.sub(r'\b[A-Z]{2,5}\b', _protect, text)
@@ -223,7 +277,7 @@ class AgentBridge:
         if not re.search(r'[\u4e00-\u9fff]', text):
             return ""
         if re.search(
-            r'^(我是你的|我是.*(?:助手|Claude|AI)|你好[！!]+(?:我是|！))',
+            r'^(我是你的|我是.*(?:助手|AI)|你好[！!]+(?:我是|！))',
             text.strip(),
         ):
             return ""
@@ -270,7 +324,7 @@ class AgentBridge:
             logger.info("AgentBridge: summarized %d -> %d chars", len(text), len(result))
             return result
         except Exception:
-            logger.exception("AgentBridge: speech summarization failed")
+            logger.error("AgentBridge: speech summarization failed")
             cleaned = self._strip_lowercase_english(self._strip_markdown(text))
             return cleaned[:SUMMARY_FALLBACK_CHARS]
 

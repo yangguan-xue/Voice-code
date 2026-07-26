@@ -33,7 +33,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
 
 def build_index(scope: str, project_root: str | None = None) -> None:
     index_path = get_index_path_for_scope(scope, project_root)
-    logger.info("build_index: scope=%s path=%s", scope, index_path)
+    logger.info("build_index: scope=%s", scope)
     conn = _get_connection(index_path)
     try:
         conn.execute(_SCHEMA)
@@ -86,7 +86,7 @@ def _fallback_search(
     entries = list_entries(scope, project_root, include_archived=False)
 
     terms = [t for t in re.split(r"[\s,，。？、！；：? !;:]+", query) if len(t) > 0]
-    logger.debug("Fallback search query='%s' terms=%s", query, terms)
+    logger.debug("Fallback search: term_count=%d", len(terms))
     if len(terms) < 1:
         logger.debug("Fallback search skipped: no terms")
         return []
@@ -169,16 +169,15 @@ def search_index(
             })
         if results:
             logger.debug(
-                "FTS search returned %d results for '%s': names=%s ranks=%s",
-                len(results), query,
-                [r["name"] for r in results],
+                "FTS search returned %d results: ranks=%s",
+                len(results),
                 [r["rank"] for r in results],
             )
             return results
         logger.debug("FTS search returned 0 results, falling back")
         return _fallback_search(query, scope, project_root, limit)
     except Exception:
-        logger.warning("FTS search failed, falling back", exc_info=True)
+        logger.warning("FTS search failed, falling back")
         return _fallback_search(query, scope, project_root, limit)
     finally:
         conn.close()

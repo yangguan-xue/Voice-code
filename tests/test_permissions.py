@@ -14,6 +14,9 @@ from voice_code.permissions import (
     _is_dangerous_bash,
     can_use_tool,
     clear_permission_rules,
+    create_permission_rule,
+    delete_permission_rule,
+    describe_permission_rule,
     evaluate_tool_permission,
     export_permission_state,
     get_workspace_rules_path,
@@ -21,6 +24,7 @@ from voice_code.permissions import (
     load_workspace_rules,
     permission_rule_summary,
     save_workspace_rules,
+    update_permission_rule,
 )
 
 
@@ -494,3 +498,395 @@ def test_clear_permission_rules_clears_selected_scopes(tmp_path: Path):
     assert ctx.session_whitelist == set()
     assert ctx.workspace_rules == []
     assert load_workspace_rules(str(tmp_path)) == []
+
+
+def test_describe_permission_rule_returns_full_details():
+    ctx = PermissionContext(
+        session_rules=[
+            PermissionRule(
+                name="session_rule",
+                behavior=PermissionBehavior.ALLOW,
+                source=PermissionRuleSource.SESSION,
+                reason_type=PermissionReasonType.SESSION_ALLOW,
+                reason_message="session allow",
+                risk_category="low",
+                tool_names=("write",),
+                path_patterns=("/repo/docs/spec.md",),
+            )
+        ]
+    )
+
+    lines = describe_permission_rule(ctx, scope="session", index=1)
+
+    assert lines[0] == "session rule 1"
+    assert any("name: session_rule" in line for line in lines)
+    assert any("path_patterns: /repo/docs/spec.md" in line for line in lines)
+
+
+def test_delete_permission_rule_removes_workspace_rule_and_persists(tmp_path: Path):
+    changed: list[str] = []
+    ctx = PermissionContext(
+        workspace_root=str(tmp_path),
+        session_rules=[
+            PermissionRule(
+                name="session_rule",
+                behavior=PermissionBehavior.ALLOW,
+                source=PermissionRuleSource.SESSION,
+                reason_type=PermissionReasonType.SESSION_ALLOW,
+                reason_message="session",
+                tool_names=("write",),
+            )
+        ],
+        workspace_rules=[
+            PermissionRule(
+                name="workspace_rule",
+                behavior=PermissionBehavior.ALLOW,
+                source=PermissionRuleSource.WORKSPACE,
+                reason_type=PermissionReasonType.SESSION_ALLOW,
+                reason_message="workspace",
+                tool_names=("bash",),
+            )
+        ],
+        on_change=lambda _ctx: changed.append("changed"),
+    )
+    save_workspace_rules(str(tmp_path), ctx.workspace_rules)
+
+    removed = delete_permission_rule(ctx, scope="workspace", index=1)
+
+    assert removed.name == "workspace_rule"
+    assert ctx.workspace_rules == []
+    assert load_workspace_rules(str(tmp_path)) == []
+    assert changed == ["changed"]
+
+
+def test_delete_permission_rule_uses_one_based_index():
+    ctx = PermissionContext(
+        session_rules=[
+            PermissionRule(
+                name="first_rule",
+                behavior=PermissionBehavior.ALLOW,
+                source=PermissionRuleSource.SESSION,
+                reason_type=PermissionReasonType.SESSION_ALLOW,
+                reason_message="first",
+                tool_names=("write",),
+            ),
+            PermissionRule(
+                name="second_rule",
+                behavior=PermissionBehavior.DENY,
+                source=PermissionRuleSource.SESSION,
+                reason_type=PermissionReasonType.RULE_MATCH,
+                reason_message="second",
+                tool_names=("edit",),
+            ),
+        ]
+    )
+
+    removed = delete_permission_rule(ctx, scope="session", index=2)
+
+    assert removed.name == "second_rule"
+    assert [rule.name for rule in ctx.session_rules] == ["first_rule"]
+
+
+def test_update_permission_rule_changes_behavior_and_message():
+    changed: list[str] = []
+    ctx = PermissionContext(
+        session_rules=[
+            PermissionRule(
+                name="first_rule",
+                behavior=PermissionBehavior.ALLOW,
+                source=PermissionRuleSource.SESSION,
+                reason_type=PermissionReasonType.SESSION_ALLOW,
+                reason_message="first",
+                tool_names=("write",),
+            )
+        ],
+        on_change=lambda _ctx: changed.append("changed"),
+    )
+
+    updated = update_permission_rule(
+        ctx,
+        scope="session",
+        index=1,
+        behavior="deny",
+        reason_message="manual deny",
+    )
+
+    assert updated.behavior == PermissionBehavior.DENY
+    assert updated.reason_message == "manual deny"
+    assert ctx.session_rules[0].behavior == PermissionBehavior.DENY
+    assert changed == ["changed"]
+
+
+def test_update_permission_rule_persists_workspace_rules(tmp_path: Path):
+    ctx = PermissionContext(
+        workspace_root=str(tmp_path),
+        workspace_rules=[
+            PermissionRule(
+                name="workspace_rule",
+                behavior=PermissionBehavior.ALLOW,
+                source=PermissionRuleSource.WORKSPACE,
+                reason_type=PermissionReasonType.SESSION_ALLOW,
+                reason_message="workspace",
+                tool_names=("bash",),
+            )
+        ],
+    )
+    save_workspace_rules(str(tmp_path), ctx.workspace_rules)
+
+    updated = update_permission_rule(
+        ctx,
+        scope="workspace",
+        index=1,
+        behavior="ask",
+    )
+
+    assert updated.behavior == PermissionBehavior.ASK
+    restored = load_workspace_rules(str(tmp_path))
+    assert restored[0].behavior == PermissionBehavior.ASK
+
+
+def test_update_permission_rule_can_edit_matcher_fields():
+    ctx = PermissionContext(
+        session_rules=[
+            PermissionRule(
+                name="editable_rule",
+                behavior=PermissionBehavior.ALLOW,
+                source=PermissionRuleSource.SESSION,
+                reason_type=PermissionReasonType.SESSION_ALLOW,
+                reason_message="editable",
+                tool_names=("write",),
+                path_patterns=("/repo/docs/*",),
+                command_patterns=("pytest",),
+                agent_types=("researcher",),
+                background=None,
+            )
+        ]
+    )
+
+    updated = update_permission_rule(
+        ctx,
+        scope="session",
+        index=1,
+        updates={
+            "tool_names": "write,edit",
+            "path_patterns": "/repo/docs/*,/repo/specs/*",
+            "command_patterns": "pytest,ruff check",
+            "agent_types": "researcher,reviewer",
+            "background": "true",
+            "risk_category": "high",
+        },
+    )
+
+    assert updated.tool_names == ("write", "edit")
+    assert updated.path_patterns == ("/repo/docs/*", "/repo/specs/*")
+    assert updated.command_patterns == ("pytest", "ruff check")
+    assert updated.agent_types == ("researcher", "reviewer")
+    assert updated.background is True
+    assert updated.risk_category == "high"
+
+
+def test_update_permission_rule_can_edit_reason_type_and_name():
+    ctx = PermissionContext(
+        session_rules=[
+            PermissionRule(
+                name="editable_rule",
+                behavior=PermissionBehavior.ALLOW,
+                source=PermissionRuleSource.SESSION,
+                reason_type=PermissionReasonType.SESSION_ALLOW,
+                reason_message="editable",
+                tool_names=("write",),
+            )
+        ]
+    )
+
+    updated = update_permission_rule(
+        ctx,
+        scope="session",
+        index=1,
+        updates={
+            "name": "renamed_rule",
+            "reason_type": "rule_match",
+        },
+    )
+
+    assert updated.name == "renamed_rule"
+    assert updated.reason_type == PermissionReasonType.RULE_MATCH
+
+
+def test_update_permission_rule_rejects_unknown_field_with_supported_list():
+    ctx = PermissionContext(
+        session_rules=[
+            PermissionRule(
+                name="editable_rule",
+                behavior=PermissionBehavior.ALLOW,
+                source=PermissionRuleSource.SESSION,
+                reason_type=PermissionReasonType.SESSION_ALLOW,
+                reason_message="editable",
+                tool_names=("write",),
+            )
+        ]
+    )
+
+    try:
+        update_permission_rule(
+            ctx,
+            scope="session",
+            index=1,
+            updates={"unknown_field": "x"},
+        )
+    except ValueError as exc:
+        message = str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected ValueError")
+
+    assert "unsupported field: unknown_field" in message
+    assert "supported fields:" in message
+    assert "tool_names" in message
+
+
+def test_update_permission_rule_rejects_invalid_background_with_examples():
+    ctx = PermissionContext(
+        session_rules=[
+            PermissionRule(
+                name="editable_rule",
+                behavior=PermissionBehavior.ALLOW,
+                source=PermissionRuleSource.SESSION,
+                reason_type=PermissionReasonType.SESSION_ALLOW,
+                reason_message="editable",
+                tool_names=("write",),
+            )
+        ]
+    )
+
+    try:
+        update_permission_rule(
+            ctx,
+            scope="session",
+            index=1,
+            updates={"background": "maybe"},
+        )
+    except ValueError as exc:
+        message = str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected ValueError")
+
+    assert "invalid background: maybe" in message
+    assert "use true, false, or none" in message
+
+
+def test_update_permission_rule_rejects_invalid_reason_type_with_choices():
+    ctx = PermissionContext(
+        session_rules=[
+            PermissionRule(
+                name="editable_rule",
+                behavior=PermissionBehavior.ALLOW,
+                source=PermissionRuleSource.SESSION,
+                reason_type=PermissionReasonType.SESSION_ALLOW,
+                reason_message="editable",
+                tool_names=("write",),
+            )
+        ]
+    )
+
+    try:
+        update_permission_rule(
+            ctx,
+            scope="session",
+            index=1,
+            updates={"reason_type": "not_real"},
+        )
+    except ValueError as exc:
+        message = str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected ValueError")
+
+    assert "invalid reason_type: not_real" in message
+    assert "allowed:" in message
+    assert "rule_match" in message
+
+
+def test_update_permission_rule_rejects_empty_update_request():
+    ctx = PermissionContext(
+        session_rules=[
+            PermissionRule(
+                name="editable_rule",
+                behavior=PermissionBehavior.ALLOW,
+                source=PermissionRuleSource.SESSION,
+                reason_type=PermissionReasonType.SESSION_ALLOW,
+                reason_message="editable",
+                tool_names=("write",),
+            )
+        ]
+    )
+
+    try:
+        update_permission_rule(ctx, scope="session", index=1)
+    except ValueError as exc:
+        message = str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected ValueError")
+
+    assert message == "no updates provided; pass a behavior, reason, or editable field"
+
+
+def test_create_permission_rule_adds_session_rule():
+    changed: list[str] = []
+    ctx = PermissionContext(on_change=lambda _ctx: changed.append("changed"))
+
+    created = create_permission_rule(
+        ctx,
+        scope="session",
+        behavior="allow",
+        updates={
+            "tool_names": "write,edit",
+            "path_patterns": "/repo/docs/*",
+            "reason_message": "Allow docs edits in this session.",
+        },
+    )
+
+    assert created.source == PermissionRuleSource.SESSION
+    assert created.behavior == PermissionBehavior.ALLOW
+    assert created.tool_names == ("write", "edit")
+    assert created.path_patterns == ("/repo/docs/*",)
+    assert ctx.session_rules == [created]
+    assert changed == ["changed"]
+
+
+def test_create_permission_rule_persists_workspace_rule(tmp_path: Path):
+    ctx = PermissionContext(workspace_root=str(tmp_path))
+
+    created = create_permission_rule(
+        ctx,
+        scope="workspace",
+        behavior="ask",
+        updates={
+            "tool_names": "bash",
+            "command_patterns": "pytest *,ruff check *",
+            "reason_message": "Ask before workspace commands.",
+        },
+    )
+
+    assert created.source == PermissionRuleSource.WORKSPACE
+    restored = load_workspace_rules(str(tmp_path))
+    assert len(restored) == 1
+    assert restored[0].behavior == PermissionBehavior.ASK
+    assert restored[0].tool_names == ("bash",)
+
+
+def test_create_permission_rule_requires_matcher_fields():
+    ctx = PermissionContext()
+
+    try:
+        create_permission_rule(
+            ctx,
+            scope="session",
+            behavior="allow",
+            updates={"reason_message": "too broad"},
+        )
+    except ValueError as exc:
+        message = str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected ValueError")
+
+    assert "at least one matcher field is required" in message
+    assert "tool_names" in message

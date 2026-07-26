@@ -13,6 +13,7 @@ class TaskStatus(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    INTERRUPTED = "interrupted"
 
 
 @dataclass(slots=True)
@@ -30,6 +31,7 @@ class TaskSummary:
     total_tokens: int = 0
     tool_uses: int = 0
     duration_ms: int = 0
+    findings: list[dict[str, str]] | None = None
 
 
 @dataclass(slots=True)

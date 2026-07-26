@@ -2,9 +2,12 @@
 
 import os
 import tomllib
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
+import httpx
 from langchain_openai import ChatOpenAI
 
 _ROOT_DIR = Path(__file__).resolve().parent.parent.parent.parent
@@ -48,6 +51,11 @@ def _load_profiles() -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
     for name, value in profiles.items():
         if isinstance(name, str) and isinstance(value, dict):
+            if isinstance(value.get("api_key"), str) and value.get("api_key"):
+                raise ValueError(
+                    f"Plaintext api_key is not allowed in models.toml profile '{name}'. "
+                    "Move the secret to an environment variable and reference it with api_key_env."
+                )
             result[name] = value
     return result
 
@@ -55,6 +63,47 @@ def _load_profiles() -> dict[str, dict[str, Any]]:
 def list_model_profiles() -> list[str]:
     """列出可用 profile 名称。"""
     return sorted(_load_profiles().keys())
+
+
+def list_model_profile_details() -> list[dict[str, str]]:
+    """List profile names with their configured model labels for desktop selectors."""
+    profiles = _load_profiles()
+    return [
+        {
+            "id": name,
+            "label": name,
+            "modelName": str(profiles[name].get("model_name", name)),
+        }
+        for name in sorted(profiles)
+    ]
+
+
+_active_profile_name: str | None = None
+
+
+def set_active_profile(profile: str | None) -> None:
+    """记录当前活跃 profile，供其他模块查询 context window 等配置。"""
+    global _active_profile_name
+    _active_profile_name = profile
+
+
+def resolve_profile_name(profile: str | None = None) -> str | None:
+    """Resolve the profile name using the same precedence as init_model."""
+    env_values = _read_env_file(_ENV_FILE)
+    _load_dotenv()
+    return profile or os.getenv("LLM_PROFILE") or env_values.get("LLM_PROFILE")
+
+
+def get_active_context_window(default: int = 200_000) -> int:
+    """返回当前活跃 profile 的 context_window；未配置时回退 default。"""
+    if not _active_profile_name:
+        return default
+    profiles = _load_profiles()
+    raw = profiles.get(_active_profile_name, {})
+    value = raw.get("context_window")
+    if isinstance(value, int) and value > 0:
+        return value
+    return default
 
 
 def _resolve_profile(
@@ -122,8 +171,7 @@ def init_model(
         timeout: 单次请求超时秒数，默认 60 秒。
     """
     env_values = _read_env_file(_ENV_FILE)
-    _load_dotenv()
-    profile_name = profile or os.getenv("LLM_PROFILE") or env_values.get("LLM_PROFILE")
+    profile_name = resolve_profile_name(profile)
     profile_values = _resolve_profile(profile_name, env_values)
 
     _api_key = (
@@ -149,6 +197,8 @@ def init_model(
     )
     _max_tokens = max_tokens or profile_values.get("max_tokens")
 
+    client_kwargs = _loopback_client_kwargs(_base_url, timeout)
+
     return ChatOpenAI(
         model=_model_name,
         base_url=_base_url,
@@ -156,4 +206,27 @@ def init_model(
         temperature=temperature,
         timeout=timeout,
         max_tokens=_max_tokens,  # type: ignore[arg-type]
+        **client_kwargs,
     )
+
+
+def _loopback_client_kwargs(base_url: str, timeout: float) -> dict[str, object]:
+    if not _uses_loopback_host(base_url):
+        return {}
+    return {
+        "http_client": httpx.Client(trust_env=False, timeout=timeout),
+        "http_async_client": httpx.AsyncClient(trust_env=False, timeout=timeout),
+    }
+
+
+def _uses_loopback_host(base_url: str) -> bool:
+    host = urlparse(base_url).hostname
+    if host is None:
+        return False
+    normalized = host.lower()
+    if normalized == "localhost" or normalized.endswith(".localhost"):
+        return True
+    try:
+        return ip_address(normalized).is_loopback
+    except ValueError:
+        return False

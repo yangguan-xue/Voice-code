@@ -72,10 +72,10 @@ def test_structure_queries_prefer_glob_and_grep():
     assert "do not silently drop characters" in prompt
 
 
-def test_with_claude_md():
-    """有 claude_md → 提示词包含项目指令。"""
-    prompt = get_system_prompt(claude_md="Always use pandas.")
-    assert "# Project Instructions (CLAUDE.md)" in prompt
+def test_with_project_instructions():
+    """有 project_instructions → 提示词包含项目指令。"""
+    prompt = get_system_prompt(project_instructions="Always use pandas.")
+    assert "# Project Instructions (AGENTS.md)" in prompt
     assert "Always use pandas." in prompt
     assert "These instructions OVERRIDE" in prompt
 
@@ -94,9 +94,9 @@ def test_empty_tools():
     assert "## " not in prompt  # no tool headings
 
 
-def test_empty_claude_md():
-    """空 claude_md → 不包含项目指令章节。"""
-    prompt = get_system_prompt(claude_md="")
+def test_empty_project_instructions():
+    """空 project_instructions → 不包含项目指令章节。"""
+    prompt = get_system_prompt(project_instructions="")
     assert "# Project Instructions" not in prompt
 
 

@@ -1,6 +1,6 @@
 """Message renderers for the Textual TUI.
 
-This mirrors cc-haha's split between Message.tsx and components/messages/*:
+This mirrors reference implementation's split between Message.tsx and components/messages/*:
 Message routes a structured entry to a specialized renderer, while the screen
 only owns state and dispatch.
 """

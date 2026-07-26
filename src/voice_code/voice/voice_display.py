@@ -185,6 +185,33 @@ class VoiceDisplay:
         if self._enabled:
             self._render()
 
+    def set_state(self, state: VoiceState) -> None:
+        """Immediately update state without changing the current audio level."""
+        with self._lock:
+            self._state = state
+        if self._enabled:
+            self._render()
+
+    # Rich presentation hooks are intentionally no-ops in the compact fallback.
+    # The full-screen VoiceDashboard implements the same small interface.
+    def set_transcript(self, _text: str) -> None:
+        return
+
+    def clear_agent_output(self) -> None:
+        return
+
+    def append_agent_text(self, _text: str) -> None:
+        return
+
+    def set_notice(self, _text: str) -> None:
+        return
+
+    def set_timing(self, _timing: object) -> None:
+        return
+
+    def set_delegations(self, _items: object) -> None:
+        return
+
     def _render(self) -> None:
         """绘制 5 行底部面板。"""
         with self._lock:
