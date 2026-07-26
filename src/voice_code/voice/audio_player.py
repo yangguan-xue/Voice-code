@@ -7,11 +7,21 @@ import logging
 import threading
 import wave
 from collections.abc import AsyncGenerator
+from typing import Any
 
 import numpy as np
-import sounddevice as sd
 
 logger = logging.getLogger(__name__)
+
+
+def _sounddevice() -> Any:
+    try:
+        import sounddevice as sd
+    except Exception as exc:  # pragma: no cover - depends on host audio libraries
+        raise RuntimeError(
+            "sounddevice is unavailable. Install PortAudio or use a non-audio test/runtime path."
+        ) from exc
+    return sd
 
 
 class AudioPlayer:
@@ -21,7 +31,7 @@ class AudioPlayer:
     """
 
     def __init__(self) -> None:
-        self._stream: sd.OutputStream | None = None
+        self._stream: Any | None = None
         self._playing = False
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -55,6 +65,7 @@ class AudioPlayer:
             self._playing = True
 
         try:
+            sd = _sounddevice()
             sd.play(audio_data, samplerate=sample_rate)
             sd.wait()
         except Exception as e:
@@ -77,7 +88,7 @@ class AudioPlayer:
         self._stop_event.clear()
 
         first = True
-        output_stream: sd.OutputStream | None = None
+        output_stream: Any | None = None
         total_samples = 0
 
         try:
@@ -87,6 +98,7 @@ class AudioPlayer:
 
                 if first:
                     logger.info("AudioPlayer: starting stream playback sr=%d", sample_rate)
+                    sd = _sounddevice()
                     output_stream = sd.OutputStream(
                         samplerate=sample_rate,
                         channels=1,
@@ -136,6 +148,7 @@ class AudioPlayer:
         if chunk.ndim == 1:
             chunk = chunk.reshape(-1, 1)
         if self._stream is None:
+            sd = _sounddevice()
             self._stream = sd.OutputStream(
                 samplerate=sample_rate, channels=1, dtype="float32", blocksize=4096
             )
@@ -154,6 +167,7 @@ class AudioPlayer:
 
     def _stop_current(self) -> None:
         try:
+            sd = _sounddevice()
             sd.stop()
         except Exception:
             pass
