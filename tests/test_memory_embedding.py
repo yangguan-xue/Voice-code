@@ -83,7 +83,7 @@ def test_embedding_config_rejects_insecure_remote_url():
     with pytest.raises(ValueError, match="HTTPS"):
         EmbeddingConfig(
             base_url="http://embedding.example/v1",
-            api_key="secret",
+            api_key="test-secret",
             model="text-embedding-v4",
             dimension=1024,
         )
