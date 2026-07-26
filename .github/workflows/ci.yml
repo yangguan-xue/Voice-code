@@ -58,6 +58,14 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+      - name: Install ripgrep
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update
+            sudo apt-get install -y ripgrep
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            brew install ripgrep
+          fi
       - run: uv sync --dev
       - run: uv run pytest tests/ -q
 
@@ -71,6 +79,10 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+      - name: Install ripgrep
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep
       - run: uv sync --dev
       - run: uv add --dev pytest-cov
       - run: uv run pytest tests/ --cov=voice_code --cov-report=term --cov-report=xml
@@ -94,7 +106,7 @@ jobs:
         run: |
           uvx detect-secrets scan \
             --exclude-files '(^|[\\/])(uv\.lock|web[\\/]pnpm-lock\.yaml|desktop[\\/]pnpm-lock\.yaml|desktop[\\/]src-tauri[\\/]Cargo\.lock)$|(^|[\\/])(web|desktop)[\\/]node_modules[\\/]|(^|[\\/])(web|desktop)[\\/]dist[\\/]|(^|[\\/])desktop[\\/]src-tauri[\\/]target[\\/]' \
-            --exclude-lines 'api_key_env|sk-secret-value|sk-plaintext|sk-thisisasecretvalue|private-token|secret-token|test-token|bad-token|temporary-test-secret|not-needed|replace-with-your|top-secret|override-key|env-secret' \
+            --exclude-lines 'api_key_env|STEPFUN_API_KEY|Bearer \{self\._api_key\}|sk-secret-value|sk-plaintext|sk-thisisasecretvalue|private-token|secret-token|test-token|bad-token|temporary-test-secret|not-needed|replace-with-your|top-secret|top-secret-value|override-key|env-secret|secret-value|test-secret|private-extraction-key|private-key|"apiKey": "secret"' \
             --force-use-all-plugins > .secrets.baseline
       - name: fail on detected secrets
         run: |
@@ -138,8 +150,13 @@ jobs:
               "not-needed",
               "replace-with-your",
               "top-secret",
+              "top-secret-value",
               "override-key",
               "env-secret",
+              "secret-value",
+              "test-secret",
+              "private-extraction-key",
+              "private-key",
           }
           pattern = re.compile(r"""(?i)(api_key|authorization|token)\s*[=:]\s*["']([^"'<>]{12,})["']""")
           files = subprocess.check_output(["git", "ls-files"], text=True).splitlines()
