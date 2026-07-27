@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from voice_code.context import get_context, get_git_status, load_claude_md
+from voice_code.context import get_context, get_git_status, load_project_instructions
 
 # ============================================================
 # Git Status 测试
@@ -62,50 +62,50 @@ async def test_get_git_status_with_dirty_worktree():
 
 
 # ============================================================
-# CLAUDE.md 测试
+# AGENTS.md 测试
 # ============================================================
 
 
 @pytest.mark.asyncio
-async def test_load_claude_md_empty():
-    """无 CLAUDE.md → 返回空字符串。"""
+async def test_load_project_instructions_empty():
+    """无 AGENTS.md → 返回空字符串。"""
     with tempfile.TemporaryDirectory() as tmp:
-        result = await load_claude_md(tmp)
+        result = await load_project_instructions(tmp)
     assert result == ""
 
 
 @pytest.mark.asyncio
-async def test_load_claude_md_single():
-    """存在 CLAUDE.md → 返回内容。"""
+async def test_load_project_instructions_single():
+    """存在 AGENTS.md → 返回内容。"""
     with tempfile.TemporaryDirectory() as tmp:
-        (Path(tmp) / "CLAUDE.md").write_text("Always use pandas.")
-        result = await load_claude_md(tmp)
+        (Path(tmp) / "AGENTS.md").write_text("Always use pandas.")
+        result = await load_project_instructions(tmp)
     assert "Always use pandas." in result
-    assert "CLAUDE.md" in result
+    assert "AGENTS.md" in result
 
 
 @pytest.mark.asyncio
-async def test_load_claude_md_multiple():
+async def test_load_project_instructions_multiple():
     """多个文件 → 按优先级拼接。"""
     with tempfile.TemporaryDirectory() as tmp:
-        (Path(tmp) / "CLAUDE.md").write_text("Project: use pandas.")
-        (Path(tmp) / ".claude").mkdir()
-        (Path(tmp) / ".claude" / "CLAUDE.md").write_text("Config: use black.")
-        (Path(tmp) / "CLAUDE.local.md").write_text("Local: use mypy.")
+        (Path(tmp) / "AGENTS.md").write_text("Project: use pandas.")
+        (Path(tmp) / ".agents").mkdir()
+        (Path(tmp) / ".agents" / "AGENTS.md").write_text("Config: use black.")
+        (Path(tmp) / "AGENTS.local.md").write_text("Local: use mypy.")
 
-        result = await load_claude_md(tmp)
+        result = await load_project_instructions(tmp)
 
     assert "Project: use pandas." in result
     assert "Config: use black." in result
     assert "Local: use mypy." in result
-    assert result.find("CLAUDE.md (project") < result.find(".claude/CLAUDE.md")
-    assert result.find(".claude/CLAUDE.md") < result.find("CLAUDE.local.md")
+    assert result.find("AGENTS.md (project") < result.find(".agents/AGENTS.md")
+    assert result.find(".agents/AGENTS.md") < result.find("AGENTS.local.md")
 
 
 @pytest.mark.asyncio
-async def test_load_claude_md_empty_cwd():
+async def test_load_project_instructions_empty_cwd():
     """空 CWD → 使用当前目录，不崩溃。"""
-    result = await load_claude_md("")
+    result = await load_project_instructions("")
     assert isinstance(result, str)
 
 
@@ -118,13 +118,13 @@ async def test_load_claude_md_empty_cwd():
 async def test_get_context():
     """get_context 返回完整 dict。"""
     with tempfile.TemporaryDirectory() as tmp:
-        (Path(tmp) / "CLAUDE.md").write_text("Use pytest.")
+        (Path(tmp) / "AGENTS.md").write_text("Use pytest.")
         result = await get_context(tmp)
 
-    assert "claudeMd" in result
+    assert "projectInstructions" in result
     assert "gitStatus" in result
     assert "currentDate" in result
-    assert "Use pytest." in result["claudeMd"]
+    assert "Use pytest." in result["projectInstructions"]
     assert "Today's date" in result["currentDate"]
 
 

@@ -1,14 +1,14 @@
 [project]
 name = "voice-code"
-version = "0.1.0"
-description = "Voice Code (语码) — Interactive coding agent with voice mode"
+version = "0.2.0"
+description = "Voice Code (语码) — interactive coding agent with voice, desktop, and web demo surfaces"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "AGPL-3.0" }
 authors = [
     { name = "Voice Code contributors" },
 ]
-keywords = ["ai", "coding-agent", "voice", "cli", "tui"]
+keywords = ["ai", "coding-agent", "voice", "cli", "tui", "desktop"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
@@ -26,16 +26,25 @@ dependencies = [
     "rich>=13.0.0",
     "sounddevice>=0.5.0",
     "textual>=8.2.7",
+    "websockets>=15.0.0",
 ]
 
 [project.urls]
 Homepage = "https://github.com/yangguan-xue/Voice-code"
 Repository = "https://github.com/yangguan-xue/Voice-code"
 Issues = "https://github.com/yangguan-xue/Voice-code/issues"
+WebDemo = "https://voice-code.yangguanxue.top/"
 
 [project.scripts]
 reasoning = "voice_code.cli:main"
 reasoning-voice = "voice_code.voice_cli:main"
+reasoning-status-sync = "voice_code.status:main"
+status = "voice_code.status:main"
+reasoning-memory = "voice_code.memory.cli:main"
+reasoning-desktop-bridge = "voice_code.desktop.cli:main"
+reasoning-desktop-voice-bridge = "voice_code.desktop_voice.cli:main"
+reasoning-web-demo = "voice_code.web_demo.cli:main"
+voice-code-agent = "voice_code.desktop_runtime.launcher:main"
 reasoning-tui = "voice_code.tui:main"
 
 [build-system]
@@ -43,7 +52,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.sdist]
-exclude = ["tools/"]
+exclude = ["/tools/", "/desktop/", "/web/", "/deploy/"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/voice_code"]
@@ -72,8 +81,21 @@ warn_unused_configs = false
 
 [dependency-groups]
 dev = [
+    "datasets>=5.0.0",
     "mypy>=2.1.0",
+    "opentelemetry-sdk>=1.44.0,<2",
+    "pymilvus>=2.6.14,<2.7",
     "pytest>=9.1.0",
     "pytest-asyncio>=1.4.0",
     "ruff>=0.15.17",
+]
+
+[project.optional-dependencies]
+milvus = [
+    "pymilvus>=2.6.14,<2.7",
+]
+telemetry = [
+    "opentelemetry-api>=1.44.0,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.44.0,<2",
+    "opentelemetry-sdk>=1.44.0,<2",
 ]

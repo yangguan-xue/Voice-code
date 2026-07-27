@@ -24,7 +24,7 @@ def test_session_state_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 
     state = build_session_runtime_state(
         session_id="20260101-000000-abcd",
-        cwd="/Users/example/programs/reasoning/new",
+        cwd="/Users/example/workspace/voice-code",
         title="优化 agent UI 观感",
         agent_mode="default",
         model_name="voice-code-pro",
@@ -35,7 +35,7 @@ def test_session_state_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 
     assert loaded.source == "loaded"
     assert loaded.state.schema_version == CURRENT_SESSION_STATE_SCHEMA_VERSION
-    assert loaded.state.project_label == "reasoning"
+    assert loaded.state.project_label == "voice-code"
     assert loaded.state.title == "优化 agent UI 观感"
 
 
@@ -47,12 +47,12 @@ def test_load_session_state_missing_file_returns_default(
 
     loaded = load_session_state(
         "20260101-000000-abcd",
-        fallback_cwd="/Users/example/programs/reasoning/new",
+        fallback_cwd="/Users/example/workspace/voice-code",
         fallback_title="旧会话",
     )
 
     assert loaded.source == "missing"
-    assert loaded.state.project_label == "reasoning"
+    assert loaded.state.project_label == "voice-code"
     assert loaded.state.title == "旧会话"
 
 
@@ -65,11 +65,11 @@ def test_load_session_state_invalid_file_degrades_to_default(
 
     loaded = load_session_state(
         "20260101-000000-abcd",
-        fallback_cwd="/Users/example/programs/reasoning/new",
+        fallback_cwd="/Users/example/workspace/voice-code",
     )
 
     assert loaded.source == "invalid"
-    assert loaded.state.project_label == "reasoning"
+    assert loaded.state.project_label == "voice-code"
 
 
 def test_resume_runtime_session_loads_sidecar_state(
@@ -81,7 +81,7 @@ def test_resume_runtime_session_loads_sidecar_state(
     transcript_path = get_session_path("20260101-000000-abcd")
     writer = TranscriptWriter(
         transcript_path,
-        session_meta={"cwd": "/Users/example/programs/reasoning"},
+        session_meta={"cwd": "/Users/example/workspace/voice-code"},
     )
     writer.write_message(HumanMessage(content="优化 agent UI 观感"))
     writer.close()
@@ -89,7 +89,7 @@ def test_resume_runtime_session_loads_sidecar_state(
     save_session_state(
         build_session_runtime_state(
             session_id="20260101-000000-abcd",
-            cwd="/Users/example/programs/reasoning",
+            cwd="/Users/example/workspace/voice-code",
             title="优化 agent UI 观感",
             model_name="voice-code-pro",
         )
@@ -98,7 +98,7 @@ def test_resume_runtime_session_loads_sidecar_state(
     resumed = resume_runtime_session("20260101-000000-abcd")
 
     assert resumed.state_source == "loaded"
-    assert resumed.runtime_state.project_label == "reasoning"
+    assert resumed.runtime_state.project_label == "voice-code"
     assert resumed.messages[0].content == "优化 agent UI 观感"
     resumed.transcript_writer.close()
 
@@ -112,7 +112,7 @@ def test_resume_runtime_session_legacy_transcript_uses_transcript_fallbacks(
     transcript_path = get_session_path("20260101-000000-abcd")
     writer = TranscriptWriter(
         transcript_path,
-        session_meta={"cwd": "/Users/example/programs/reasoning/new"},
+        session_meta={"cwd": "/Users/example/workspace/voice-code"},
     )
     writer.write_message(HumanMessage(content="优化 agent UI 观感"))
     writer.close()
@@ -120,6 +120,6 @@ def test_resume_runtime_session_legacy_transcript_uses_transcript_fallbacks(
     resumed = resume_runtime_session("20260101-000000-abcd")
 
     assert resumed.state_source == "missing"
-    assert resumed.runtime_state.project_label == "reasoning"
+    assert resumed.runtime_state.project_label == "voice-code"
     assert resumed.runtime_state.title == "优化 agent UI 观感"
     resumed.transcript_writer.close()

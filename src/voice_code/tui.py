@@ -1,4 +1,4 @@
-"""Textual TUI — transcript-style chat layout closer to cc-haha."""
+"""Textual TUI — transcript-style chat layout closer to reference implementation."""
 
 from __future__ import annotations
 
@@ -7,9 +7,9 @@ import asyncio
 import json
 import os
 import queue
-import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from langchain_core.messages import (
@@ -31,28 +31,45 @@ from textual.events import Paste
 from textual.message import Message
 from textual.widgets import Static, TextArea
 
+from voice_code import __version__
 from voice_code.agent.abort import AbortSignal
 from voice_code.agent.loop import agent_loop
 from voice_code.agent.types import AgentEvent, EventType
 from voice_code.clipboard import copy_to_clipboard
 from voice_code.commands import (
-    COMMON_HELP,
-    TUI_EXTRA_HELP,
+    format_help_lines,
     format_session_lines,
+    format_status_lines,
     parse_command,
     resume_session,
 )
-from voice_code.llm.models import list_model_profiles
+from voice_code.goal_prompt import GOAL_BUILDER_ADDENDUM
+from voice_code.goals import (
+    GoalBuildRequest,
+    GoalExecutionAdapter,
+    GoalRuntimeService,
+    GoalSpec,
+)
+from voice_code.llm.models import get_active_context_window, list_model_profiles
+from voice_code.memory.rag_models import MemoryScope as RagMemoryScope
+from voice_code.memory.service import MemoryService, find_memory_file_path
 from voice_code.permissions import (
     PermissionBehavior,
+    PermissionContext,
     PermissionDecision,
     clear_permission_rules,
+    create_permission_rule,
+    delete_permission_rule,
+    describe_permission_rule,
     export_permission_state,
     load_session_rules_from_state,
     load_workspace_rules,
+    permission_rule_add_usage,
+    permission_rule_edit_usage,
     permission_rule_summary,
+    update_permission_rule,
 )
-from voice_code.runtime import bootstrap_runtime
+from voice_code.runtime import bootstrap_runtime, build_workspace_prompt
 from voice_code.session import (
     ResumeRuntimeResult,
     SessionRuntimeState,
@@ -64,7 +81,9 @@ from voice_code.session import (
     load_session_state,
     save_session_state,
 )
+from voice_code.session.manager import make_session_id
 from voice_code.subagents.service import SubagentService, get_or_create_service
+from voice_code.telemetry import configure_logging
 from voice_code.theme import (
     ACCENT_BLUE,
     ACCENT_GREEN,
@@ -111,6 +130,8 @@ from voice_code.tui_runtime import (
 )
 from voice_code.tui_sessions import SessionSelected, SessionSidebarView
 
+USER_AGENT = f"voice-code-tui/{__version__}"
+
 
 @dataclass
 class TurnBlock:
@@ -144,6 +165,44 @@ def _stream_turn_events_sync(
     resume_messages: list[BaseMessage] | None,
     transcript_writer: TranscriptWriter | None,
     abort_signal: AbortSignal | None,
+    memory_service,
+    memory_project_key: str | None,
+    event_queue: queue.Queue[AgentEvent | Exception | None],
+) -> None:
+    async def _run() -> None:
+        async for event in agent_loop(
+            text,
+            tools,
+            prompt,
+            model,
+            permission_context=permission_context,
+            abort_signal=abort_signal,
+            resume_messages=resume_messages,
+            transcript_writer=transcript_writer,
+            fallback_model=fallback_model,
+            memory_service=memory_service,
+            memory_project_key=memory_project_key,
+        ):
+            event_queue.put(event)
+
+    try:
+        asyncio.run(_run())
+    except Exception as ex:
+        event_queue.put(ex)
+    finally:
+        event_queue.put(None)
+
+
+def _stream_goal_iteration_events_sync(
+    text: str,
+    tools: list,
+    prompt: str,
+    model: ChatOpenAI,
+    fallback_model: ChatOpenAI | None,
+    permission_context,
+    resume_messages: list[BaseMessage] | None,
+    transcript_writer: TranscriptWriter | None,
+    abort_signal: AbortSignal,
     event_queue: queue.Queue[AgentEvent | Exception | None],
 ) -> None:
     async def _run() -> None:
@@ -377,6 +436,8 @@ class AgentScreen(Screen):
         self._current_turn_has_live_thinking = False
         self._awaiting_permission = False
         self._selected_task_id: str | None = None
+        self._memory_rag = None
+        self._memory_project_key: str | None = None
 
         async def _init() -> None:
             runtime = await bootstrap_runtime(profile=self._profile)
@@ -388,6 +449,8 @@ class AgentScreen(Screen):
             self._session_id = runtime.session_id
             self._cwd = runtime.cwd
             self._transcript_writer = runtime.transcript_writer
+            self._memory_rag = runtime.memory_service
+            self._memory_project_key = runtime.memory_project_key
             self._runtime_state = load_session_state(
                 runtime.session_id,
                 fallback_cwd=runtime.cwd,
@@ -597,10 +660,11 @@ class AgentScreen(Screen):
         model_body.append("当前模型", style=TEXT_DIM)
         sections.append(section("模型", model_body))
 
-        usage_ratio = min(1.0, approx_tokens / 128000) if approx_tokens else 0.0
+        context_window = get_active_context_window(128_000)
+        usage_ratio = min(1.0, approx_tokens / context_window) if approx_tokens else 0.0
         bar_fill = max(1, int(usage_ratio * 12)) if approx_tokens else 0
         context_body = Text()
-        context_body.append(f"~{approx_tokens:,} / 128,000\n", style=TEXT_PRIMARY)
+        context_body.append(f"~{approx_tokens:,} / {context_window:,}\n", style=TEXT_PRIMARY)
         if bar_fill:
             context_body.append("■" * bar_fill, style=ACCENT_RED)
             context_body.append("■" * (12 - bar_fill), style=BORDER_SECONDARY)
@@ -1103,6 +1167,26 @@ class AgentScreen(Screen):
         )
         self._refresh_history()
 
+    async def _sync_memory_index(
+        self,
+        *,
+        announce: bool = False,
+        rebuild: bool = False,
+    ) -> None:
+        if self._memory_rag is None:
+            return
+        try:
+            delivered = (
+                await self._memory_rag.reindex()
+                if rebuild
+                else await self._memory_rag.sync_pending(limit=100)
+            )
+        except Exception as exc:  # UI boundary: memory must never terminate the TUI
+            self._append_system_error(f"Memory index sync failed: {type(exc).__name__}")
+            return
+        if announce:
+            self._append_system_info(f"Memory index synchronized: {delivered} event(s).")
+
     def _append_info_to_current_turn(self, text: str) -> None:
         if self._current_turn is not None:
             self._current_turn.entries.append(TuiEntry(kind="info", text=text))
@@ -1212,16 +1296,10 @@ class AgentScreen(Screen):
         except Exception:
             pass
 
-        try:
-            subprocess.run(
-                ["pbcopy"],
-                input=text,
-                text=True,
-                check=True,
-            )
+        if copy_to_clipboard(text):
             self._append_system_info(success_message)
-        except Exception as ex:
-            self._append_system_error(f"Copy failed: {ex}")
+            return
+        self._append_system_error("Copy failed: system clipboard is unavailable.")
 
     def _build_transcript_text(self) -> str:
         return render_turns_as_plain_text(self._plain_turns())
@@ -1322,51 +1400,6 @@ class AgentScreen(Screen):
 
     @work
     async def _query(self, text: str) -> None:
-        state = QueryRuntimeState()
-
-        def update_thinking() -> None:
-            display = build_runtime_display(state)
-            self._current_turn_has_live_thinking = bool(state.live_thinking_text.strip())
-            if state.live_thinking_text.strip():
-                self._set_streaming_thinking(state.live_thinking_text, is_live=True)
-            else:
-                self._set_streaming_thinking("")
-            self._update_statusbar(display.status_phase, display.tool_count)
-
-        def flush_pending_buffer(buffer: str) -> str:
-            commit = commit_streaming_buffer(state, buffer)
-            if not buffer:
-                self._set_streaming_preview("")
-                self._set_streaming_thinking("")
-                return ""
-            if commit.thinking_text:
-                self._set_streaming_thinking(commit.thinking_text, is_live=False)
-            else:
-                self._set_streaming_thinking("")
-            if commit.visible_text:
-                self._set_streaming_preview_final(commit.visible_text)
-            else:
-                self._set_streaming_preview("")
-            update_thinking()
-            return ""
-
-        def apply_nonstream_outcome(event: AgentEvent) -> None:
-            outcome = apply_nonstream_event(state, event)
-            if outcome.kind == "tool_call":
-                update_thinking()
-                self._append_tool_call(event)
-            elif outcome.kind == "tool_result":
-                update_thinking()
-                self._append_tool_result(event)
-            elif outcome.kind == "error":
-                self._apply_error_event_metrics(event)
-                update_thinking()
-                self._route_error_event(event)
-            elif outcome.kind == "finish":
-                update_thinking()
-                self._finish_turn()
-                self._scroll_to_bottom(force=True)
-
         try:
             if self._model is None:
                 self._append_error_to_current_turn("Error: model is still initializing")
@@ -1388,61 +1421,21 @@ class AgentScreen(Screen):
                     self._resume_messages,
                     self._transcript_writer,
                     self._abort_signal,
+                    self._memory_rag,
+                    self._memory_project_key,
                     event_queue,
                 )
             )
 
-            pending_text = ""
-            self._update_statusbar("streaming", 0)
-
-            while True:
-                item = await asyncio.to_thread(event_queue.get)
-                if item is None:
-                    break
-                if isinstance(item, Exception):
-                    raise item
-
-                event = item
-                if event.phase:
-                    state.current_phase = event.phase
-                    update_thinking()
-                if event.type == EventType.TEXT:
-                    text_update = apply_text_event(
-                        state,
-                        pending_text=pending_text,
-                        content=event.content,
-                    )
-                    pending_text = text_update.pending_text
-                    self._metric_output_chars += text_update.output_chars
-                    should_follow = self._is_near_bottom()
-                    self._set_streaming_preview(text_update.visible_text)
-                    update_thinking()
-                    self._update_statusbar(
-                        state.current_phase or "streaming",
-                        len(state.executing_tools),
-                    )
-                    self._scroll_to_bottom(force=should_follow)
-                    continue
-                if event.type == EventType.REASONING:
-                    apply_reasoning_event(state, event.content)
-                    update_thinking()
-                    self._scroll_to_bottom()
-                    continue
-
-                pending_text = flush_pending_buffer(pending_text)
-                apply_nonstream_outcome(event)
-
-            pending_text = flush_pending_buffer(pending_text)
+            await self._consume_agent_event_queue(
+                event_queue,
+                finish_turn_on_finish=True,
+            )
             await producer
             if self._transcript_writer is not None:
                 self._resume_messages = self._transcript_writer.read_all_messages()
         except Exception as ex:
-            state.executing_tools.clear()
-            state.current_phase = ""
-            state.live_thinking_text = ""
-            state.streaming_text = ""
-            state.streaming_thinking = ""
-            update_thinking()
+            self._update_statusbar()
             self._append_error_to_current_turn(f"Error: {ex}")
             self._finish_turn()
             if self._transcript_writer is not None:
@@ -1455,6 +1448,131 @@ class AgentScreen(Screen):
             input_widget.disabled = False
             self._update_composer_meta()
             input_widget.focus()
+
+    @work
+    async def _run_goal_command(self, spec: GoalSpec, *, resume: bool = False) -> None:
+        if self._is_busy:
+            self._append_system_error("Another turn is already running.")
+            return
+        if self._model is None:
+            self._append_system_error("Model is still initializing.")
+            return
+        self._is_busy = True
+        input_widget = self.query_one("#input", TextArea)
+        input_widget.disabled = True
+        self._start_turn(
+            f"/goal{'-resume' if resume else ''} {spec.goal_id}: {spec.objective}"
+        )
+        self._append_status_to_current_turn(
+            f"Goal {'resumed' if resume else 'started'}: {spec.goal_id}"
+        )
+        goal_system_prompt = ""
+        goal_permission_context: PermissionContext | None = None
+
+        async def builder(request: GoalBuildRequest) -> str:
+            nonlocal goal_system_prompt, goal_permission_context
+            self._abort_signal.clear()
+            if not goal_system_prompt:
+                goal_system_prompt = await build_workspace_prompt(
+                    workspace=request.workspace,
+                    tools=self._tools,
+                    model_name=self._model.model_name,
+                    use_cache=False,
+                )
+                goal_system_prompt = goal_system_prompt + GOAL_BUILDER_ADDENDUM
+            if goal_permission_context is None:
+                goal_permission_context = PermissionContext(
+                    mode="bypassPermissions",
+                    approver=self._perm_ctx.approver,
+                    workspace_root=request.workspace,
+                    workspace_rules=load_workspace_rules(request.workspace),
+                )
+            event_queue: queue.Queue[AgentEvent | Exception | None] = queue.Queue()
+            producer = asyncio.create_task(
+                asyncio.to_thread(
+                    _stream_goal_iteration_events_sync,
+                    request.prompt,
+                    self._tools,
+                    goal_system_prompt,
+                    self._model,
+                    self._fallback_model,
+                    goal_permission_context,
+                    None,
+                    None,
+                    self._abort_signal,
+                    event_queue,
+                )
+            )
+            result = await self._consume_agent_event_queue(
+                event_queue,
+                finish_turn_on_finish=False,
+            )
+            await producer
+            self._append_status_to_current_turn(
+                f"Goal {spec.goal_id}: builder iteration completed."
+            )
+            return result
+
+        async def reviewer(review_spec: GoalSpec, result: str) -> list[str]:
+            response = await self._model.ainvoke(
+                [
+                    SystemMessage(
+                        content=(
+                            "You are an independent, strict code reviewer. "
+                            "You review text evidence only; you have no tools and no "
+                            "filesystem access. Never complain about your own lack of "
+                            "tools or access — only judge the evidence shown to you."
+                        )
+                    ),
+                    HumanMessage(
+                        content=(
+                            "Return a JSON array containing only blocking issues. Return [] when "
+                            "the objective is satisfied.\n"
+                            "You are a JUDGE, not an executor. You cannot run commands, read "
+                            "files, or modify the workspace, and you must NOT list your own "
+                            "lack of filesystem access as a blocker. Judge ONLY from the "
+                            "Objective and the Result text provided below: whether the result "
+                            "actually addresses the objective, whether the claimed verification "
+                            "commands were actually run and shown, and whether the acceptance "
+                            "items were actually updated.\n"
+                            f"Objective: {review_spec.objective}\nResult: {result[-12000:]}"
+                        )
+                    ),
+                ]
+            )
+            raw = str(response.content or "").strip()
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                return [raw] if raw else []
+            return [str(item) for item in parsed] if isinstance(parsed, list) else [raw]
+
+        try:
+            service = GoalRuntimeService(
+                self._cwd,
+                adapter_factory=lambda _spec: GoalExecutionAdapter(
+                    builder=builder,
+                    reviewer=reviewer,
+                ),
+            )
+            result = (
+                await service.resume(spec.goal_id)
+                if resume
+                else await service.start(spec)
+            )
+            self._append_status_to_current_turn(
+                f"Goal {spec.goal_id}: {result.state.status} — {result.message}"
+            )
+        except Exception as exc:
+            self._append_error_to_current_turn(f"Goal {spec.goal_id} failed: {exc}")
+        finally:
+            self._current_turn_has_live_thinking = False
+            self._clear_live_regions()
+            self._finish_turn()
+            self._is_busy = False
+            input_widget.disabled = False
+            input_widget.focus()
+            self._update_composer_meta()
 
     # ── Clipboard actions ──────────────────────────────────────────────
 
@@ -1550,12 +1668,111 @@ class AgentScreen(Screen):
             thinking_widget.update(Text())
         self._update_statusbar(display.status_phase, display.tool_count)
 
+    async def _consume_agent_event_queue(
+        self,
+        event_queue: queue.Queue[AgentEvent | Exception | None],
+        *,
+        finish_turn_on_finish: bool,
+    ) -> str:
+        """Render agent events into the active TUI turn and return visible text."""
+        state = QueryRuntimeState()
+        pending_text = ""
+        collected_text: list[str] = []
+
+        def update_thinking() -> None:
+            display = build_runtime_display(state)
+            self._current_turn_has_live_thinking = bool(state.live_thinking_text.strip())
+            if state.live_thinking_text.strip():
+                self._set_streaming_thinking(state.live_thinking_text, is_live=True)
+            else:
+                self._set_streaming_thinking("")
+            self._update_statusbar(display.status_phase, display.tool_count)
+
+        def flush_pending_buffer(buffer: str) -> str:
+            commit = commit_streaming_buffer(state, buffer)
+            if not buffer:
+                self._set_streaming_preview("")
+                self._set_streaming_thinking("")
+                return ""
+            if commit.thinking_text:
+                self._set_streaming_thinking(commit.thinking_text, is_live=False)
+            else:
+                self._set_streaming_thinking("")
+            if commit.visible_text:
+                collected_text.append(commit.visible_text)
+                self._set_streaming_preview_final(commit.visible_text)
+            else:
+                self._set_streaming_preview("")
+            update_thinking()
+            return ""
+
+        def apply_nonstream_outcome(event: AgentEvent) -> None:
+            outcome = apply_nonstream_event(state, event)
+            if outcome.kind == "tool_call":
+                update_thinking()
+                self._append_tool_call(event)
+            elif outcome.kind == "tool_result":
+                update_thinking()
+                self._append_tool_result(event)
+            elif outcome.kind == "error":
+                self._apply_error_event_metrics(event)
+                update_thinking()
+                self._route_error_event(event)
+            elif outcome.kind == "finish":
+                update_thinking()
+                if finish_turn_on_finish:
+                    self._finish_turn()
+                    self._scroll_to_bottom(force=True)
+
+        self._update_statusbar("streaming", 0)
+
+        while True:
+            item = await asyncio.to_thread(event_queue.get)
+            if item is None:
+                break
+            if isinstance(item, Exception):
+                raise item
+
+            event = item
+            if event.phase:
+                state.current_phase = event.phase
+                update_thinking()
+            if event.type == EventType.TEXT:
+                text_update = apply_text_event(
+                    state,
+                    pending_text=pending_text,
+                    content=event.content,
+                )
+                pending_text = text_update.pending_text
+                self._metric_output_chars += text_update.output_chars
+                should_follow = self._is_near_bottom()
+                self._set_streaming_preview(text_update.visible_text)
+                update_thinking()
+                self._update_statusbar(
+                    state.current_phase or "streaming",
+                    len(state.executing_tools),
+                )
+                self._scroll_to_bottom(force=should_follow)
+                continue
+            if event.type == EventType.REASONING:
+                apply_reasoning_event(state, event.content)
+                update_thinking()
+                self._scroll_to_bottom()
+                continue
+
+            pending_text = flush_pending_buffer(pending_text)
+            apply_nonstream_outcome(event)
+
+        flush_pending_buffer(pending_text)
+        return "\n\n".join(text for text in collected_text if text.strip()).strip()
+
     # ── Commands ───────────────────────────────────────────────────────
 
     def _handle_command(self, text: str) -> None:
         command = parse_command(text)
         if command.name == "help":
-            self._append_system_info(COMMON_HELP + TUI_EXTRA_HELP)
+            for line in format_help_lines(include_tui=True):
+                self._append_system_info(line)
         elif command.name == "clear":
             self._turns.clear()
             self._current_turn = None
@@ -1589,9 +1806,313 @@ class AgentScreen(Screen):
                     "Permission rules cleared:"
                     f" session={removed_session} workspace={removed_workspace}"
                 )
+        elif command.name == "perm_add":
+            scope = str(command.args.get("scope", "session")).strip().lower()
+            behavior = str(command.args.get("behavior", "")).strip().lower()
+            updates = command.args.get("updates", {})
+            if (
+                scope not in {"session", "workspace"}
+                or behavior not in {"allow", "deny", "ask"}
+                or not isinstance(updates, dict)
+                or not updates
+            ):
+                self._append_system_error(permission_rule_add_usage())
+            else:
+                try:
+                    created = create_permission_rule(
+                        self._perm_ctx,
+                        scope=scope,
+                        behavior=behavior,
+                        updates=updates,
+                    )
+                    rule_count = (
+                        len(self._perm_ctx.session_rules)
+                        if scope == "session"
+                        else len(self._perm_ctx.workspace_rules)
+                    )
+                    self._append_system_info(f"Added {scope} rule {rule_count}: {created.name}")
+                except ValueError as exc:
+                    self._append_system_error(str(exc))
+        elif command.name == "perm_rule":
+            scope = str(command.args.get("scope", "session")).strip().lower()
+            index = command.args.get("index")
+            if scope not in {"session", "workspace"} or not isinstance(index, int):
+                self._append_system_error("Usage: /perm-rule [session|workspace] <index>")
+            else:
+                try:
+                    for line in describe_permission_rule(self._perm_ctx, scope=scope, index=index):
+                        self._append_system_info(line)
+                except (IndexError, ValueError) as exc:
+                    self._append_system_error(str(exc))
+        elif command.name == "perm_delete":
+            scope = str(command.args.get("scope", "session")).strip().lower()
+            index = command.args.get("index")
+            if scope not in {"session", "workspace"} or not isinstance(index, int):
+                self._append_system_error("Usage: /perm-delete [session|workspace] <index>")
+            else:
+                try:
+                    removed = delete_permission_rule(self._perm_ctx, scope=scope, index=index)
+                    self._append_system_info(f"Deleted {scope} rule {index}: {removed.name}")
+                except (IndexError, ValueError) as exc:
+                    self._append_system_error(str(exc))
+        elif command.name == "perm_edit":
+            scope = str(command.args.get("scope", "session")).strip().lower()
+            index = command.args.get("index")
+            behavior = str(command.args.get("behavior", "")).strip().lower()
+            reason_message = str(command.args.get("reason_message", "")).strip()
+            updates = command.args.get("updates", {})
+            if (
+                scope not in {"session", "workspace"}
+                or not isinstance(index, int)
+                or (
+                    behavior not in {"allow", "deny", "ask"}
+                    and not isinstance(updates, dict)
+                )
+                or (not behavior and not updates)
+            ):
+                self._append_system_error(permission_rule_edit_usage())
+            else:
+                try:
+                    updated = update_permission_rule(
+                        self._perm_ctx,
+                        scope=scope,
+                        index=index,
+                        behavior=behavior,
+                        reason_message=reason_message or None,
+                        updates=updates if isinstance(updates, dict) else None,
+                    )
+                    self._append_system_info(
+                        f"Updated {scope} rule {index}: {updated.name}"
+                        f" -> {updated.behavior.name.lower()}"
+                    )
+                except (IndexError, ValueError) as exc:
+                    self._append_system_error(str(exc))
         elif command.name == "sessions":
             for line in format_session_lines(limit=10):
                 self._append_system_info(line)
+        elif command.name == "status":
+            for line in format_status_lines("overview"):
+                self._append_system_info(line)
+        elif command.name == "status_areas":
+            for line in format_status_lines("areas"):
+                self._append_system_info(line)
+        elif command.name == "status_gaps":
+            for line in format_status_lines("gaps"):
+                self._append_system_info(line)
+        elif command.name == "goal_status":
+            goal_id = str(command.args.get("goal_id", "")).strip()
+            if not goal_id:
+                self._append_system_error("Usage: /goal-status <id>")
+            else:
+                try:
+                    state = GoalRuntimeService(self._cwd).inspect(goal_id)
+                    self._append_system_info(
+                        json.dumps(state.to_dict(), ensure_ascii=False, indent=2)
+                    )
+                except (FileNotFoundError, ValueError) as exc:
+                    self._append_system_error(f"Unable to load goal: {exc}")
+        elif command.name == "goal_stop":
+            goal_id = str(command.args.get("goal_id", "")).strip()
+            if not goal_id:
+                self._append_system_error("Usage: /goal-stop <id>")
+            else:
+                try:
+                    GoalRuntimeService(self._cwd).request_stop(goal_id)
+                    self._append_system_info(f"Stop requested for goal: {goal_id}")
+                except (FileNotFoundError, ValueError) as exc:
+                    self._append_system_error(f"Unable to stop goal: {exc}")
+        elif command.name == "goal_resume":
+            goal_id = str(command.args.get("goal_id", "")).strip()
+            if not goal_id:
+                self._append_system_error("Usage: /goal-resume <id>")
+            else:
+                try:
+                    spec = GoalRuntimeService(self._cwd).load_spec(goal_id)
+                    self._run_goal_command(spec, resume=True)
+                except (FileNotFoundError, ValueError) as exc:
+                    self._append_system_error(f"Unable to resume goal: {exc}")
+        elif command.name == "goal":
+            objective = str(command.args.get("objective", "")).strip()
+            verification = command.args.get("verification_commands", [])
+            allowed_paths = command.args.get("allowed_paths", [])
+            if (
+                not objective
+                or not isinstance(verification, list)
+                or not verification
+                or not isinstance(allowed_paths, list)
+                or not allowed_paths
+            ):
+                self._append_system_error(
+                    "Usage: /goal --allow <path> --verify <command> "
+                    "[--max-iterations N] <objective>"
+                )
+            else:
+                spec = GoalSpec(
+                    goal_id=make_session_id().lower(),
+                    objective=objective,
+                    workspace=self._cwd,
+                    verification_commands=[str(item) for item in verification],
+                    allowed_paths=[str(item) for item in allowed_paths],
+                    max_iterations=int(command.args.get("max_iterations", 5)),
+                )
+                self._run_goal_command(spec)
+        elif command.name == "memory":
+            service = MemoryService(project_root=self._cwd)
+            action = str(command.args.get("action", "list"))
+            entry_id = str(command.args.get("entry_id", "")).strip()
+            if action == "list":
+                entries = (
+                    self._memory_rag.list(user_id="local")
+                    if self._memory_rag is not None
+                    else service.list()
+                )
+                self._append_system_info(
+                    "\n".join(
+                        f"{e.id} [{e.scope}] "
+                        f"{getattr(e, 'name', getattr(e, 'summary', ''))}"
+                        for e in entries
+                    )
+                    if entries
+                    else "No memories."
+                )
+            elif action == "show":
+                rag_entry = (
+                    self._memory_rag.get(entry_id, user_id="local")
+                    if self._memory_rag is not None
+                    else None
+                )
+                path = find_memory_file_path(entry_id, self._cwd) if rag_entry is None else None
+                self._append_system_info(
+                    rag_entry.content
+                    if rag_entry
+                    else path.read_text(encoding="utf-8")
+                    if path
+                    else f"Memory not found: {entry_id}"
+                )
+            elif action == "candidates" and self._memory_rag is not None:
+                candidates = self._memory_rag.list_candidates(user_id="local")
+                self._append_system_info(
+                    "\n".join(
+                        f"{item.candidate.candidate_id} [{item.status}] "
+                        f"{item.candidate.content}"
+                        for item in candidates
+                    )
+                    if candidates
+                    else "No memory candidates."
+                )
+            elif action == "approve" and self._memory_rag is not None:
+                try:
+                    entry = self._memory_rag.approve_candidate(entry_id, user_id="local")
+                    self._append_system_info(f"Approved: {entry.id}")
+                except ValueError as exc:
+                    self._append_system_error(f"Memory candidate not approved: {exc}")
+            elif action == "reject" and self._memory_rag is not None:
+                rejected = self._memory_rag.reject_candidate(entry_id, user_id="local")
+                self._append_system_info(
+                    f"Rejected: {entry_id}"
+                    if rejected
+                    else f"Memory candidate not found: {entry_id}"
+                )
+            elif action == "conflicts" and self._memory_rag is not None:
+                conflicts = self._memory_rag.list_conflicts(user_id="local")
+                self._append_system_info(
+                    "\n".join(
+                        f"{item.candidate.candidate_id} {item.candidate.content}"
+                        for item in conflicts
+                    )
+                    if conflicts
+                    else "No memory conflicts."
+                )
+            elif action == "resolve" and self._memory_rag is not None:
+                keep_id = str(command.args.get("keep_id", "")).strip()
+                try:
+                    entry = self._memory_rag.resolve_conflict(
+                        entry_id,
+                        keep_memory_id=keep_id,
+                        user_id="local",
+                    )
+                    self._append_system_info(f"Conflict resolved; kept: {entry.id}")
+                except ValueError as exc:
+                    self._append_system_error(f"Conflict not resolved: {exc}")
+            elif action == "why" and self._memory_rag is not None:
+                try:
+                    self._append_system_info(json.dumps(
+                        self._memory_rag.explain_memory(entry_id, user_id="local"),
+                        ensure_ascii=False,
+                        indent=2,
+                    ))
+                except ValueError as exc:
+                    self._append_system_error(str(exc))
+            elif action == "edit" and self._memory_rag is not None:
+                replacement = str(command.args.get("text", "")).strip()
+                try:
+                    entry = self._memory_rag.edit_memory(
+                        entry_id, replacement, user_id="local"
+                    )
+                    self._append_system_info(f"Updated: {entry.id} v{entry.version}")
+                except ValueError as exc:
+                    self._append_system_error(f"Memory not updated: {exc}")
+            elif action == "reindex":
+                if self._memory_rag is not None:
+                    asyncio.create_task(
+                        self._sync_memory_index(announce=True, rebuild=True)
+                    )
+                else:
+                    service.reindex()
+                    self._append_system_info("Memory index rebuilt.")
+            elif action == "audit":
+                issues = service.audit()
+                self._append_system_info(
+                    "No memory issues."
+                    if not issues
+                    else "\n".join(f"[{item['type']}] {item['message']}" for item in issues)
+                )
+            else:
+                self._append_system_error(
+                    "Usage: /memory [list|show <id>|candidates|approve <id>|reject <id>|"
+                    "conflicts|resolve <id> --keep <memory_id>|why <id>|"
+                    "edit <id> <text>|reindex|audit]"
+                )
+        elif command.name == "remember":
+            content = str(command.args.get("text", "")).strip()
+            scope = str(command.args.get("scope", "project"))
+            if not content:
+                self._append_system_error("Usage: /remember [user|project] <text>")
+            else:
+                try:
+                    if self._memory_rag is not None:
+                        result = self._memory_rag.remember(
+                            content,
+                            user_id="local",
+                            project_key=self._memory_project_key,
+                            scope=RagMemoryScope(scope),
+                            session_id=self._session_id,
+                        )
+                        self._append_system_info(
+                            f"Remembered: {result.entry.id} [{result.entry.scope}]"
+                        )
+                        asyncio.create_task(self._sync_memory_index())
+                    else:
+                        entry = MemoryService(project_root=self._cwd).remember(
+                            content, session_id=self._session_id, scope=scope
+                        )
+                        self._append_system_info(f"Remembered: {entry.id} [{entry.scope}]")
+                except ValueError as exc:
+                    self._append_system_error(f"Memory not saved: {exc}")
+        elif command.name == "forget":
+            entry_id = str(command.args.get("entry_id", "")).strip()
+            scope = str(command.args.get("scope", "project"))
+            if not entry_id:
+                self._append_system_error("Usage: /forget [user|project] <id>")
+            else:
+                forgotten = (
+                    self._memory_rag.archive(entry_id, user_id="local")
+                    if self._memory_rag is not None
+                    else MemoryService(project_root=self._cwd).forget(entry_id, scope)
+                )
+                self._append_system_info(
+                    f"Archived: {entry_id}" if forgotten else f"Memory not found: {entry_id}"
+                )
         elif command.name == "tasks":
             if self._subagent_service is None:
                 self._append_system_info("Subagent service is not ready.")
@@ -1864,16 +2385,42 @@ class AgentApp(App):
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="reasoning-tui", description="Textual TUI")
     parser.add_argument("--profile", default=None, help="Model profile name from models.toml")
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument(
+        "--log-format",
+        choices=["console", "json"],
+        default=None,
+        help="Log format (default: REASONING_LOG_FORMAT or console)",
+    )
     return parser.parse_args(argv)
+
+
+def _open_tui_log_stream():
+    reasoning_home = Path(os.environ.get("REASONING_HOME", Path.home() / ".reasoning"))
+    log_dir = reasoning_home.expanduser() / "logs"
+    try:
+        log_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        return (log_dir / "reasoning-tui.log").open("a", encoding="utf-8", buffering=1)
+    except OSError:
+        return Path(os.devnull).open("w", encoding="utf-8")
 
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
+    log_stream = _open_tui_log_stream()
     try:
-        AgentApp(profile=args.profile).run()
-    except ValueError as e:
-        profiles = ", ".join(list_model_profiles()) or "(none)"
-        raise SystemExit(f"{e}\nAvailable profiles: {profiles}") from e
+        configure_logging(
+            debug=args.debug,
+            json_output=None if args.log_format is None else args.log_format == "json",
+            stream=log_stream,
+        )
+        try:
+            AgentApp(profile=args.profile).run()
+        except ValueError as e:
+            profiles = ", ".join(list_model_profiles()) or "(none)"
+            raise SystemExit(f"{e}\nAvailable profiles: {profiles}") from e
+    finally:
+        log_stream.close()
 
 
 if __name__ == "__main__":

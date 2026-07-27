@@ -1,5 +1,6 @@
 """Session utilities."""
 
+from voice_code.session.lifecycle import SessionDeleteResult, delete_session, export_session
 from voice_code.session.manager import (
     SessionGroup,
     SessionSummary,
@@ -23,6 +24,9 @@ from voice_code.session.state import (
 from voice_code.session.transcript import TranscriptReader, TranscriptWriter
 
 __all__ = [
+    "SessionDeleteResult",
+    "delete_session",
+    "export_session",
     "TranscriptReader",
     "TranscriptWriter",
     "ResumeRuntimeResult",

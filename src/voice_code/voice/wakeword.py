@@ -30,7 +30,7 @@ class WakeWordDetector:
         """
         self._wake_words = [w.lower() for w in (wake_words or self.DEFAULT_WAKE_WORDS)]
         self._on_wake_callbacks: list[Callable[[], None]] = []
-        logger.info("WakeWordDetector initialized: %s", self._wake_words)
+        logger.info("WakeWordDetector initialized with %d wake words", len(self._wake_words))
 
     def on_wake(self, callback: Callable[[], None]) -> None:
         """注册唤醒回调。"""
@@ -55,26 +55,23 @@ class WakeWordDetector:
         for word in self._wake_words:
             # 精确子串匹配
             if word in text:
-                logger.info("WakeWordDetector: exact match: '%s' in '%s'", word, text)
+                logger.info("WakeWordDetector: exact match")
                 for cb in self._on_wake_callbacks:
                     try:
                         cb()
                     except Exception:
-                        logger.exception("WakeWordDetector: callback error")
+                        logger.error("WakeWordDetector: callback error")
                 return True
             # 前缀模糊匹配：唤醒词 >= 3 字时，前 3 字匹配即触发
             if len(word) >= 3:
                 prefix = word[:3]
                 if prefix in text:
-                    logger.info(
-                        "WakeWordDetector: prefix match: '%s' (prefix='%s') in '%s'",
-                        word, prefix, text,
-                    )
+                    logger.info("WakeWordDetector: prefix match")
                     for cb in self._on_wake_callbacks:
                         try:
                             cb()
                         except Exception:
-                            logger.exception("WakeWordDetector: callback error")
+                            logger.error("WakeWordDetector: callback error")
                     return True
 
         return False

@@ -57,5 +57,4 @@ def test_grep_path_not_found():
     """不存在的路径应提示精确路径未命中，而不是猜相近文件。"""
     result = grep.invoke({"pattern": "hello", "path": "/nonexistent"})
     assert "Error" in result
-    if _has_rg:
-        assert "exact missing path" in result
+    assert "exact missing path" in result

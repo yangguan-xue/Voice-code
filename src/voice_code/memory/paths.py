@@ -6,7 +6,8 @@ from pathlib import Path
 
 
 def get_reasoning_dir() -> Path:
-    return Path.home() / ".reasoning"
+    configured = os.environ.get("REASONING_HOME", "").strip()
+    return Path(configured).expanduser() if configured else Path.home() / ".reasoning"
 
 
 def get_memory_root() -> Path:

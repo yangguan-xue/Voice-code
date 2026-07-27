@@ -1,0 +1,11 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "resources": {
+      "resources/runtime/python": "runtime/python",
+      "resources/runtime/README.txt": "runtime/README.txt",
+      "resources/runtime/runtime-manifest.json": "runtime/runtime-manifest.json",
+      "resources/runtime/voice-code-agent": "runtime/voice-code-agent"
+    }
+  }
+}

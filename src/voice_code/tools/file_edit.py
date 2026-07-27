@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 from langchain_core.tools import tool
 
+from voice_code.audit import record_audit_event
+from voice_code.security import WorkspaceBoundaryError, resolve_workspace_path
 from voice_code.tools.cache import mark_as_read, was_read
 
 logger = logging.getLogger(__name__)
@@ -17,10 +18,6 @@ _MAX_OUTPUT_CHARS = 50_000
 Prevents excessively large responses from overwhelming the LLM context window
 when the edit confirmation or error message contains very long strings.
 """
-
-
-def _resolve(file_path: str) -> Path:
-    return Path(file_path).expanduser().resolve()
 
 
 def _truncate_output(text: str) -> str:
@@ -54,7 +51,10 @@ def edit(
     Returns:
         Confirmation message indicating success or error.
     """
-    path = _resolve(file_path)
+    try:
+        path = resolve_workspace_path(file_path)
+    except WorkspaceBoundaryError as exc:
+        return _truncate_output(f"<tool_use_error>Error: {exc}</tool_use_error>")
 
     # No-op check
     if old_string == new_string:
@@ -70,6 +70,14 @@ def edit(
             try:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(new_string, encoding="utf-8")
+                record_audit_event(
+                    event_type="bash.write",
+                    actor="agent",
+                    resource_id=f"file:{path.name}",
+                    outcome="created",
+                    rule="file_edit_tool",
+                    approval_result="recorded",
+                )
                 mark_as_read(file_path)
                 return _truncate_output(f"The file {file_path} has been created successfully.")
             except OSError as e:
@@ -122,6 +130,14 @@ def edit(
     except OSError as e:
         return _truncate_output(f"<tool_use_error>Error writing file: {e}</tool_use_error>")
 
+    record_audit_event(
+        event_type="bash.write",
+        actor="agent",
+        resource_id=f"file:{path.name}",
+        outcome="updated",
+        rule="file_edit_tool",
+        approval_result="recorded",
+    )
     mark_as_read(file_path)
 
     replaced = "All occurrences were" if replace_all else "The file has been"

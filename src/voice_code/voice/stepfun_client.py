@@ -103,7 +103,7 @@ class StepFunASRClient:
         if not text.strip():
             raise RuntimeError("stt returned empty text")
 
-        logger.info("StepFun ASR (%d chars): %s", len(text), text[:100])
+        logger.info("StepFun ASR completed (%d chars)", len(text))
         return text.strip()
 
     async def health_check(self) -> bool:
@@ -185,7 +185,7 @@ class StepFunTTSClient:
         if not audio_bytes or len(audio_bytes) < 44:
             raise RuntimeError(f"tts returned invalid audio ({len(audio_bytes)} bytes)")
 
-        logger.info("StepFun TTS: %s -> %d bytes", text[:60], len(audio_bytes))
+        logger.info("StepFun TTS completed (%d chars, %d bytes)", len(text), len(audio_bytes))
         return audio_bytes
 
     async def health_check(self) -> bool:

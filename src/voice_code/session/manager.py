@@ -5,7 +5,7 @@ from __future__ import annotations
 import secrets
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from voice_code.session.transcript import TranscriptReader
 
@@ -49,6 +49,13 @@ def _normalize_project_path(project_path: str) -> str:
     raw_path = project_path.strip()
     if not raw_path:
         return ""
+    if raw_path.startswith("/"):
+        path = PurePosixPath(raw_path)
+        if path.name == "new" and path.parent.name:
+            return str(path.parent)
+        if path.name == "src" and path.parent.name == "new" and path.parent.parent.name:
+            return str(path.parent.parent)
+        return str(path)
     path = Path(raw_path)
     # The published app currently runs from the repo's `new/` package dir,
     # but users think in terms of the workspace root (`reasoning`), not `new`.
@@ -81,7 +88,12 @@ def list_session_summaries(
     results: list[SessionSummary] = []
     for path in files[:limit]:
         reader = TranscriptReader(path)
-        info = reader.read_info()
+        try:
+            info = reader.read_info()
+        except OSError:
+            continue
+        if int(info.get("message_count", 0)) == 0 and int(info.get("corrupt_record_count", 0)) > 0:
+            continue
         updated_at = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
         state_result = load_session_state(
             path.stem,
@@ -90,6 +102,8 @@ def list_session_summaries(
             fallback_updated_at=updated_at,
         )
         runtime_state = state_result.state
+        if bool(runtime_state.ui_state.get("archived", False)):
+            continue
         title = runtime_state.title.strip() or str(info["title"])
         project_path = _normalize_project_path(runtime_state.project_path or runtime_state.cwd)
         summary_updated_at = runtime_state.updated_at.strip() or updated_at

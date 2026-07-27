@@ -12,10 +12,13 @@ import fnmatch
 import json
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum, StrEnum, auto
 from pathlib import Path
 from typing import Protocol
+
+from voice_code.audit import record_audit_event
+from voice_code.telemetry import ErrorCode, EventName
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +169,25 @@ _DANGEROUS_PATTERNS: list[str] = [
 _COMPOUND_COMMAND_TOKENS = ("&&", "||", ";", "|")
 _WRITE_INTENT_TOKENS = (">", ">>", "tee ", "sed -i", "perl -pi", "python -c", "cat >")
 _WORKSPACE_RULES_VERSION = 1
+_EDITABLE_RULE_FIELDS = (
+    "name",
+    "behavior",
+    "reason_type",
+    "reason_message",
+    "risk_category",
+    "tool_names",
+    "path_patterns",
+    "command_patterns",
+    "agent_types",
+    "background",
+)
+_MATCHER_RULE_FIELDS = (
+    "tool_names",
+    "path_patterns",
+    "command_patterns",
+    "agent_types",
+    "background",
+)
 
 
 def _is_dangerous_bash(command: str) -> bool:
@@ -194,6 +216,104 @@ def _tool_path_candidates(tool_input: dict[str, object]) -> list[str]:
         if value:
             candidates.append(value)
     return candidates
+
+
+def permission_rule_edit_usage() -> str:
+    return (
+        "Usage: /perm-edit [session|workspace] <index> <allow|deny|ask> [reason] "
+        "| /perm-edit [session|workspace] <index> field=value... "
+        f"Supported fields: {', '.join(_EDITABLE_RULE_FIELDS)}"
+    )
+
+
+def permission_rule_add_usage() -> str:
+    return (
+        "Usage: /perm-add [session|workspace] <allow|deny|ask> field=value... "
+        f"Supported fields: {', '.join(_EDITABLE_RULE_FIELDS)}"
+    )
+
+
+def _supported_fields_message() -> str:
+    return ", ".join(_EDITABLE_RULE_FIELDS)
+
+
+def _parse_behavior_value(value: str) -> PermissionBehavior:
+    try:
+        return PermissionBehavior[value.strip().upper()]
+    except KeyError as exc:
+        raise ValueError(
+            f"invalid behavior: {value}; allowed: allow, deny, ask"
+        ) from exc
+
+
+def _parse_reason_type_value(value: str) -> PermissionReasonType:
+    try:
+        return PermissionReasonType(value)
+    except ValueError as exc:
+        allowed = ", ".join(reason_type.value for reason_type in PermissionReasonType)
+        raise ValueError(f"invalid reason_type: {value}; allowed: {allowed}") from exc
+
+
+def _parse_background_value(value: str) -> bool | None:
+    lowered = value.lower()
+    if lowered in {"true", "yes", "1"}:
+        return True
+    if lowered in {"false", "no", "0"}:
+        return False
+    if lowered in {"none", "null", ""}:
+        return None
+    raise ValueError(f"invalid background: {value}; use true, false, or none")
+
+
+def _apply_rule_updates(
+    current: PermissionRule,
+    *,
+    behavior: str = "",
+    reason_message: str | None = None,
+    updates: dict[str, str] | None = None,
+) -> PermissionRule:
+    replace_kwargs: dict[str, object] = {}
+
+    if behavior:
+        replace_kwargs["behavior"] = _parse_behavior_value(behavior)
+
+    if reason_message is not None:
+        replace_kwargs["reason_message"] = reason_message.strip()
+
+    for key, raw_value in (updates or {}).items():
+        normalized_key = key.strip().lower()
+        value = raw_value.strip()
+        if normalized_key == "name":
+            replace_kwargs["name"] = value
+        elif normalized_key == "reason_type":
+            replace_kwargs["reason_type"] = _parse_reason_type_value(value)
+        elif normalized_key == "risk_category":
+            replace_kwargs["risk_category"] = value
+        elif normalized_key in {
+            "tool_names",
+            "path_patterns",
+            "command_patterns",
+            "agent_types",
+        }:
+            replace_kwargs[normalized_key] = tuple(
+                item.strip() for item in value.split(",") if item.strip()
+            )
+        elif normalized_key == "background":
+            replace_kwargs["background"] = _parse_background_value(value)
+        elif normalized_key == "behavior":
+            replace_kwargs["behavior"] = _parse_behavior_value(value)
+        elif normalized_key == "reason_message":
+            replace_kwargs["reason_message"] = value
+        else:
+            raise ValueError(
+                "unsupported field:"
+                f" {normalized_key}; supported fields: {_supported_fields_message()}"
+            )
+
+    if not replace_kwargs:
+        raise ValueError("no updates provided; pass a behavior, reason, or editable field")
+
+    return replace(current, **replace_kwargs)
 
 
 def _matches_rule(
@@ -362,6 +482,136 @@ def _format_rule_lines(rules: list[PermissionRule]) -> list[str]:
             f"  {index}. [{rule.behavior.name.lower()}] {target}{matcher}  ({rule.name})"
         )
     return lines
+
+
+def _rules_for_scope(context: PermissionContext, scope: str) -> list[PermissionRule]:
+    normalized = scope.strip().lower()
+    if normalized == "session":
+        return context.session_rules
+    if normalized == "workspace":
+        return context.workspace_rules
+    raise ValueError("scope must be 'session' or 'workspace'")
+
+
+def _rule_at_index(context: PermissionContext, *, scope: str, index: int) -> PermissionRule:
+    rules = _rules_for_scope(context, scope)
+    if index < 1 or index > len(rules):
+        raise IndexError(f"{scope} rule index out of range: {index}")
+    return rules[index - 1]
+
+
+def describe_permission_rule(
+    context: PermissionContext,
+    *,
+    scope: str,
+    index: int,
+) -> list[str]:
+    rule = _rule_at_index(context, scope=scope, index=index)
+    lines = [f"{scope} rule {index}"]
+    lines.append(f"name: {rule.name}")
+    lines.append(f"behavior: {rule.behavior.name.lower()}")
+    lines.append(f"source: {rule.source.value}")
+    lines.append(f"reason_type: {rule.reason_type.value}")
+    lines.append(f"risk_category: {rule.risk_category}")
+    lines.append(f"reason_message: {rule.reason_message}")
+    if rule.tool_names:
+        lines.append(f"tool_names: {', '.join(rule.tool_names)}")
+    if rule.path_patterns:
+        lines.append(f"path_patterns: {', '.join(rule.path_patterns)}")
+    if rule.command_patterns:
+        lines.append(f"command_patterns: {', '.join(rule.command_patterns)}")
+    if rule.agent_types:
+        lines.append(f"agent_types: {', '.join(rule.agent_types)}")
+    if rule.background is not None:
+        lines.append(f"background: {rule.background}")
+    return lines
+
+
+def delete_permission_rule(
+    context: PermissionContext,
+    *,
+    scope: str,
+    index: int,
+) -> PermissionRule:
+    rules = _rules_for_scope(context, scope)
+    if index < 1 or index > len(rules):
+        raise IndexError(f"{scope} rule index out of range: {index}")
+    removed = rules.pop(index - 1)
+    if scope == "workspace":
+        save_workspace_rules(context.workspace_root, context.workspace_rules)
+    if context.on_change is not None:
+        context.on_change(context)
+    return removed
+
+
+def update_permission_rule(
+    context: PermissionContext,
+    *,
+    scope: str,
+    index: int,
+    behavior: str = "",
+    reason_message: str | None = None,
+    updates: dict[str, str] | None = None,
+) -> PermissionRule:
+    rules = _rules_for_scope(context, scope)
+    if index < 1 or index > len(rules):
+        raise IndexError(f"{scope} rule index out of range: {index}")
+
+    current = rules[index - 1]
+    updated = _apply_rule_updates(
+        current,
+        behavior=behavior,
+        reason_message=reason_message,
+        updates=updates,
+    )
+    rules[index - 1] = updated
+    if scope == "workspace":
+        save_workspace_rules(context.workspace_root, context.workspace_rules)
+    if context.on_change is not None:
+        context.on_change(context)
+    return updated
+
+
+def create_permission_rule(
+    context: PermissionContext,
+    *,
+    scope: str,
+    behavior: str,
+    updates: dict[str, str] | None = None,
+) -> PermissionRule:
+    normalized_scope = scope.strip().lower()
+    if normalized_scope not in {"session", "workspace"}:
+        raise ValueError("scope must be 'session' or 'workspace'")
+
+    source = (
+        PermissionRuleSource.SESSION
+        if normalized_scope == "session"
+        else PermissionRuleSource.WORKSPACE
+    )
+    base_rule = PermissionRule(
+        name=f"manual_{source.value}_{len(_rules_for_scope(context, normalized_scope)) + 1}",
+        behavior=_parse_behavior_value(behavior),
+        source=source,
+        reason_type=PermissionReasonType.RULE_MATCH,
+        reason_message="Manually added permission rule.",
+    )
+    created = _apply_rule_updates(base_rule, updates=updates)
+    if not any(
+        getattr(created, field_name)
+        for field_name in _MATCHER_RULE_FIELDS
+    ):
+        raise ValueError(
+            "at least one matcher field is required; add one of: "
+            + ", ".join(_MATCHER_RULE_FIELDS)
+        )
+
+    rules = _rules_for_scope(context, normalized_scope)
+    rules.append(created)
+    if normalized_scope == "workspace":
+        save_workspace_rules(context.workspace_root, context.workspace_rules)
+    if context.on_change is not None:
+        context.on_change(context)
+    return created
 
 
 def clear_permission_rules(
@@ -767,6 +1017,7 @@ def can_use_tool(
     )
     decision = evaluation.decision
     if decision.behavior != PermissionBehavior.ASK:
+        _log_permission_decision(tool_name, decision)
         return decision
 
     request = evaluation.request or PermissionRequest(
@@ -811,7 +1062,32 @@ def can_use_tool(
         save_workspace_rules(ctx.workspace_root, ctx.workspace_rules)
         if ctx.on_change is not None:
             ctx.on_change(ctx)
+    _log_permission_decision(tool_name, final_decision)
     return final_decision
+
+
+def _log_permission_decision(tool_name: str, decision: PermissionDecision) -> None:
+    reason = decision.reason
+    outcome = decision.behavior.name.lower()
+    extra: dict[str, object] = {
+        "event": EventName.PERMISSION_DECIDED,
+        "tool_name": tool_name,
+        "permission_behavior": outcome,
+        "outcome": outcome,
+        "risk_category": reason.risk_category if reason is not None else "unknown",
+        "rule_source": decision.rule_source or "none",
+    }
+    if decision.behavior == PermissionBehavior.DENY:
+        extra["error_code"] = ErrorCode.TOOL_PERMISSION_DENIED
+    logger.info("permission decided", extra=extra)
+    record_audit_event(
+        event_type="permission.decision",
+        actor="agent",
+        resource_id=f"tool:{tool_name}",
+        outcome=outcome,
+        rule=decision.matched_rule or decision.rule_source or "permission_policy",
+        approval_result=outcome,
+    )
 
 
 def _add_to_whitelist(ctx: PermissionContext, tool_name: str) -> None:

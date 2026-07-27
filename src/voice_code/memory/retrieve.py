@@ -49,8 +49,8 @@ def retrieve_memories(
     expanded = _expand_query(query)
     search_query = expanded if expanded != query else query
     if search_query != query:
-        logger.info("retrieve_memories: query expanded: '%s' -> '%s'", query, search_query)
-    logger.info("retrieve: query='%s' proot=%s lim=%d", search_query, project_root, limit)
+        logger.info("retrieve_memories: query expanded")
+    logger.info("retrieve_memories: started limit=%d", limit)
     candidates = []
     if project_root:
         project_results = search_index(search_query, "project", project_root, limit=limit * 5)
@@ -79,11 +79,11 @@ def retrieve_memories(
                 "content": entry.content,
                 "tags": entry.tags,
                 "source_kind": entry.source.kind,
+                "score": s.get("_memory_score"),
             })
     logger.info(
-        "retrieve_memories: returning %d results: names=%s",
+        "retrieve_memories: returning %d results",
         len(enriched),
-        [e["name"] for e in enriched],
     )
     return enriched
 
@@ -94,7 +94,7 @@ def retrieve_memories_for_scope(
     project_root: str | None = None,
     limit: int = 5,
 ) -> list[dict]:
-    logger.info("retrieve_memories_for_scope query='%s' scope=%s limit=%d", query, scope, limit)
+    logger.info("retrieve_memories_for_scope: scope=%s limit=%d", scope, limit)
     results = search_index(query, scope, project_root, limit=limit * 2)
     logger.debug("retrieve_for_scope: %d results → top_k=%d", len(results), limit)
     selected = rerank_candidates(query, results, top_k=limit)
@@ -112,10 +112,10 @@ def retrieve_memories_for_scope(
                 "content": entry.content,
                 "tags": entry.tags,
                 "source_kind": entry.source.kind,
+                "score": s.get("_memory_score"),
             })
     logger.info(
-        "retrieve_memories_for_scope: returning %d results: names=%s",
+        "retrieve_memories_for_scope: returning %d results",
         len(enriched),
-        [e["name"] for e in enriched],
     )
     return enriched

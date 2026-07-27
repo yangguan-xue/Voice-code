@@ -32,6 +32,7 @@ from voice_code.subagents.runtime import (
     SubagentRuntimeRequest,
 )
 from voice_code.subagents.types import AgentTask, TaskProgress, TaskStatus
+from voice_code.task_supervisor import TaskSupervisor, TaskSupervisorConfig
 
 
 @dataclass(slots=True)
@@ -150,7 +151,8 @@ class SubagentService:
             transcript_root=transcript_root,
         )
         self._lock = threading.RLock()
-        self._background_tasks: dict[str, asyncio.Task[None]] = {}
+        self._background_tasks: dict[str, asyncio.Task[SubagentRunResult]] = {}
+        self.task_supervisor = TaskSupervisor(TaskSupervisorConfig(max_concurrent_tasks=16))
         self._notifications: list[TaskNotification] = []
 
     @property
@@ -297,7 +299,12 @@ class SubagentService:
         for _ in range(count):
             runtime_request = self._build_runtime_request(context, request)
             task_ids.append(runtime_request.task_id)
-            task = asyncio.create_task(self._run_single(runtime_request))
+            task = self.task_supervisor.create_task(
+                self._run_single(runtime_request),
+                owner="subagent",
+                task_id=runtime_request.task_id,
+                name=f"subagent:{runtime_request.agent_type}",
+            )
             self._background_tasks[runtime_request.task_id] = task
             task.add_done_callback(
                 lambda _, task_id=runtime_request.task_id: self._background_tasks.pop(task_id, None)
@@ -338,20 +345,37 @@ class SubagentService:
             validate_fork_prompt(request.prompt)
             system_prompt = build_fork_system_prompt(context.system_prompt)
             agent_type = "fork"
-            tools = list(context.tools)
+            tools = [tool for tool in context.tools if tool.name != "agent"]
             model = context.model
             max_turns = 30
         else:
             definition = get_agent_definition(request.subagent_type)
+            is_background = bool(request.run_in_background)
+            if is_background and not definition.background_capable:
+                raise ValueError(
+                    f"Subagent type '{definition.agent_type}' cannot run in background"
+                )
             system_prompt = definition.system_prompt
             agent_type = definition.agent_type
-            tools = filter_tools_for_definition(context.tools, definition)
+            tools = filter_tools_for_definition(
+                context.tools,
+                definition,
+                background=is_background,
+            )
             model = self._resolve_model(context, request, definition)
             max_turns = definition.max_turns or 30
 
+        requested_mode = (
+            definition.permission_mode if request.subagent_type is not None else None
+        )
+        child_mode = requested_mode or context.permission_context.mode
+        if child_mode == "bypassPermissions":
+            child_mode = "default"
+        if bool(request.run_in_background) and child_mode == "default":
+            child_mode = "dontAsk"
         permission_context = PermissionContext(
-            mode=context.permission_context.mode,
-            session_whitelist=context.permission_context.session_whitelist,
+            mode=child_mode,
+            session_whitelist=set(context.permission_context.session_whitelist),
             output_format=context.permission_context.output_format,
             approver=context.permission_context.approver,
             session_id=context.session_id,
@@ -359,9 +383,9 @@ class SubagentService:
             agent_type=agent_type,
             parent_session_id=context.session_id,
             workspace_root=context.permission_context.workspace_root,
-            workspace_rules=context.permission_context.workspace_rules,
-            session_rules=context.permission_context.session_rules,
-            runtime_rules=context.permission_context.runtime_rules,
+            workspace_rules=list(context.permission_context.workspace_rules),
+            session_rules=list(context.permission_context.session_rules),
+            runtime_rules=list(context.permission_context.runtime_rules),
             on_change=context.permission_context.on_change,
         )
 
@@ -462,7 +486,7 @@ def _task_to_dict(task: AgentTask) -> dict[str, Any]:
 
 def _restored_task_status(status: TaskStatus) -> TaskStatus:
     if status in {TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.WAITING_PERMISSION}:
-        return TaskStatus.CANCELLED
+        return TaskStatus.INTERRUPTED
     return status
 
 

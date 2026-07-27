@@ -41,29 +41,28 @@ class SttClient:
                 )
                 response.raise_for_status()
         except httpx.TimeoutException:
-            logger.exception("STT request timed out")
+            logger.error("STT request timed out")
             raise RuntimeError("stt request timed out") from None
-        except httpx.HTTPError as e:
-            logger.exception("STT HTTP request failed")
-            raise RuntimeError(f"stt request failed: {e}") from None
+        except httpx.HTTPError:
+            logger.error("STT HTTP request failed")
+            raise RuntimeError("stt request failed") from None
 
         try:
             data = response.json()
         except (json.JSONDecodeError, ValueError):
-            logger.error("STT response not valid JSON: %s", response.text[:200])
+            logger.error("STT response not valid JSON")
             raise RuntimeError("stt response parse failed") from None
 
         if "error" in data:
-            err = data["error"]
-            logger.error("STT service error: %s", err)
-            raise RuntimeError(f"stt service error: {err.get('message', 'unknown')}")
+            logger.error("STT service returned an error")
+            raise RuntimeError("stt service error")
 
         text = data.get("text", "")
         if not isinstance(text, str) or not text.strip():
             logger.warning("STT returned empty text")
             raise RuntimeError("stt returned empty text")
 
-        logger.info("STT result (%d chars): %s", len(text), text[:100])
+        logger.info("STT completed (%d chars)", len(text))
         return text.strip()
 
     async def health_check(self) -> bool:

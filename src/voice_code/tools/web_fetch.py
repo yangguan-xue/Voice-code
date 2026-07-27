@@ -2,11 +2,56 @@
 
 from __future__ import annotations
 
+import ipaddress
 import logging
+import socket
+import urllib.error
+import urllib.parse
+import urllib.request
 
 from langchain_core.tools import tool
 
+from voice_code import __version__
+
 logger = logging.getLogger(__name__)
+USER_AGENT = f"voice-code/{__version__}"
+
+_MAX_RESPONSE_BYTES = 1_000_000
+_MAX_REDIRECTS = 5
+_ALLOWED_CONTENT_TYPES = ("text/", "application/json", "application/xml")
+
+
+def _validate_public_url(url: str) -> None:
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("URL must use http or https and include a hostname")
+    if parsed.username or parsed.password:
+        raise ValueError("URLs containing credentials are not allowed")
+    host = parsed.hostname.rstrip(".").lower()
+    if host == "localhost" or host.endswith(".localhost"):
+        raise ValueError("Localhost URLs are not allowed")
+    try:
+        addresses = {item[4][0] for item in socket.getaddrinfo(host, parsed.port or 443)}
+    except socket.gaierror as exc:
+        raise ValueError(f"Unable to resolve URL hostname: {host}") from exc
+    for address in addresses:
+        ip = ipaddress.ip_address(address)
+        if not ip.is_global:
+            raise ValueError(f"URL resolves to a non-public address: {ip}")
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.redirect_count = 0
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        self.redirect_count += 1
+        if self.redirect_count > _MAX_REDIRECTS:
+            raise urllib.error.HTTPError(newurl, code, "Too many redirects", headers, fp)
+        target = urllib.parse.urljoin(req.full_url, newurl)
+        _validate_public_url(target)
+        return super().redirect_request(req, fp, code, msg, headers, target)
 
 
 @tool
@@ -22,20 +67,27 @@ def web_fetch(url: str) -> str:
     Args:
         url: The URL to fetch. Must be a fully-formed valid URL.
     """
-    if not url.startswith(("http://", "https://")):
-        return f"<tool_use_error>Error: Invalid URL: {url}</tool_use_error>"
-
     try:
-        import urllib.error
-        import urllib.request
-
+        _validate_public_url(url)
         req = urllib.request.Request(
             url,
-            headers={"User-Agent": "reasoning-agent/0.1"},
+            headers={"User-Agent": USER_AGENT},
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            content = resp.read().decode("utf-8", errors="replace")
-    except urllib.error.URLError as e:
+        opener = urllib.request.build_opener(_SafeRedirectHandler())
+        with opener.open(req, timeout=10) as resp:
+            _validate_public_url(resp.geturl())
+            content_type = resp.headers.get_content_type().lower()
+            if not any(content_type.startswith(prefix) for prefix in _ALLOWED_CONTENT_TYPES):
+                return (
+                    "<tool_use_error>Error: Unsupported response content type: "
+                    f"{content_type}</tool_use_error>"
+                )
+            raw = resp.read(_MAX_RESPONSE_BYTES + 1)
+            if len(raw) > _MAX_RESPONSE_BYTES:
+                return "<tool_use_error>Error: Response exceeded 1 MB limit</tool_use_error>"
+            charset = resp.headers.get_content_charset() or "utf-8"
+            content = raw.decode(charset, errors="replace")
+    except (ValueError, urllib.error.URLError, urllib.error.HTTPError) as e:
         return f"<tool_use_error>Error fetching URL: {e}</tool_use_error>"
     except Exception as e:
         return f"<tool_use_error>Error: {e}</tool_use_error>"
@@ -69,3 +121,4 @@ web_fetch.metadata = {
     "is_concurrency_safe": True,
     "max_result_chars": 50_000,
 }
+object.__setattr__(web_fetch, "USER_AGENT", USER_AGENT)

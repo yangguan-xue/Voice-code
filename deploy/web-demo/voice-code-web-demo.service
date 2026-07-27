@@ -1,0 +1,18 @@
+[Unit]
+Description=Voice Code Web Demo backend
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/workspace/workspace/voice-code
+EnvironmentFile=/home/ubuntu/workspace/workspace/voice-code/.env
+Environment=PATH=/home/ubuntu/workspace/workspace/voice-code/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=VIRTUAL_ENV=/home/ubuntu/workspace/workspace/voice-code/.venv
+Environment=REASONING_WEB_DEMO_SANDBOX_IMAGE=voice-code-web-demo-sandbox:latest
+ExecStart=/home/ubuntu/workspace/workspace/voice-code/.venv/bin/reasoning-web-demo --host 127.0.0.1 --port 8787 --sandbox-root /home/ubuntu/voice-code-demo/sandboxes --template-repo /home/ubuntu/workspace/workspace/voice-code/examples/demo-repo --allowed-origin http://118.25.44.28 --allowed-origin https://voice-code.yangguanxue.top
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

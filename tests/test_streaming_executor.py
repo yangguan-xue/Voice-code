@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 
 import pytest
@@ -13,9 +14,12 @@ from voice_code.tools.streaming_executor import AbortReason, StreamingToolExecut
 
 @pytest.mark.asyncio
 async def test_completed_results_are_yielded_by_finish_order():
+    concurrent_start = threading.Barrier(2)
+
     @tool
     def slow_read(label: str, delay_ms: int) -> str:
         """Return after sleeping."""
+        concurrent_start.wait(timeout=1)
         time.sleep(delay_ms / 1000)
         return f"done:{label}"
 
@@ -36,11 +40,13 @@ async def test_completed_results_are_yielded_by_finish_order():
 @pytest.mark.asyncio
 async def test_concurrent_tools_run_before_exclusive_tool():
     timeline: list[str] = []
+    concurrent_start = threading.Barrier(2)
 
     @tool
     def concurrent_tool(label: str, delay_ms: int) -> str:
         """Concurrent-safe test tool."""
         timeline.append(f"start:{label}")
+        concurrent_start.wait(timeout=1)
         time.sleep(delay_ms / 1000)
         timeline.append(f"end:{label}")
         return label
@@ -154,7 +160,11 @@ async def test_no_truncation_when_limit_is_none():
         """Unlimited result tool."""
         return "x" * 20
 
-    unlimited_tool.metadata = {"is_readonly": True, "is_concurrency_safe": True, "max_result_chars": None}
+    unlimited_tool.metadata = {
+        "is_readonly": True,
+        "is_concurrency_safe": True,
+        "max_result_chars": None,
+    }
 
     executor = StreamingToolExecutor([unlimited_tool], turn=1)
     executor.add_all([{"name": "unlimited_tool", "args": {}, "id": "tc_1"}])

@@ -13,8 +13,18 @@ from voice_code.memory.service import MemoryService
 from voice_code.memory.store import create_entry, delete_entry_file, list_entries
 
 
+def test_memory_root_respects_reasoning_home(monkeypatch, tmp_path):
+    from voice_code.memory.paths import get_memory_root
+
+    reasoning_home = tmp_path / "reasoning-home"
+    monkeypatch.setenv("REASONING_HOME", str(reasoning_home))
+
+    assert get_memory_root() == reasoning_home / "memory"
+
+
 @pytest.fixture
-def memory_service(tmp_path):
+def memory_service(monkeypatch, tmp_path):
+    monkeypatch.setenv("REASONING_HOME", str(tmp_path / "reasoning-home"))
     project_root = str(tmp_path / "project")
     from voice_code.memory.paths import ensure_memory_dirs
 

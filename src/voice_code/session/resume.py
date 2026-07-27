@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -15,6 +16,7 @@ from voice_code.session.state import (
     load_session_state,
 )
 from voice_code.session.transcript import TranscriptReader, TranscriptWriter
+from voice_code.telemetry import MetricName, record_histogram, start_span
 
 
 @dataclass(slots=True)
@@ -33,23 +35,33 @@ class ResumeRuntimeResult:
 
 
 def resume_runtime_session(session_id: str) -> ResumeRuntimeResult:
-    path = get_session_path(session_id)
-    if not path.exists():
-        raise FileNotFoundError(session_id)
+    started_at = time.monotonic()
+    with start_span("session.resume", {"operation": "resume"}):
+        try:
+            path = get_session_path(session_id)
+            if not path.exists():
+                raise FileNotFoundError(session_id)
 
-    reader = TranscriptReader(path)
-    info = reader.read_info()
-    updated_at = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
-    state_result = load_session_state(
-        session_id,
-        fallback_cwd=str(info.get("cwd", "")),
-        fallback_title=str(info.get("title", "")),
-        fallback_updated_at=updated_at,
-    )
-    return ResumeRuntimeResult(
-        session_id=session_id,
-        messages=reader.read_all(),
-        transcript_writer=TranscriptWriter(path),
-        runtime_state=state_result.state,
-        state_source=state_result.source,
-    )
+            reader = TranscriptReader(path)
+            info = reader.read_info()
+            updated_at = datetime.fromtimestamp(path.stat().st_mtime).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            state_result = load_session_state(
+                session_id,
+                fallback_cwd=str(info.get("cwd", "")),
+                fallback_title=str(info.get("title", "")),
+                fallback_updated_at=updated_at,
+            )
+            return ResumeRuntimeResult(
+                session_id=session_id,
+                messages=reader.read_all(),
+                transcript_writer=TranscriptWriter(path),
+                runtime_state=state_result.state,
+                state_source=state_result.source,
+            )
+        finally:
+            record_histogram(
+                MetricName.SESSION_RESUME_DURATION_SECONDS,
+                time.monotonic() - started_at,
+            )

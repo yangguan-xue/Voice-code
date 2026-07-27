@@ -10,8 +10,7 @@ import threading
 import time
 import wave
 from collections.abc import Callable
-
-import sounddevice as sd
+from typing import Any
 
 from voice_code.voice.types import (
     CHANNELS,
@@ -23,6 +22,16 @@ from voice_code.voice.types import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _sounddevice() -> Any:
+    try:
+        import sounddevice as sd
+    except Exception as exc:  # pragma: no cover - depends on host audio libraries
+        raise RuntimeError(
+            "sounddevice is unavailable. Install PortAudio before using microphone capture."
+        ) from exc
+    return sd
 
 FRAME_SAMPLES = int(SAMPLE_RATE * FRAME_MS / 1000)
 SILENCE_FRAMES = int(SEGMENT_SILENCE_SECONDS * 1000 / FRAME_MS)
@@ -61,7 +70,7 @@ class SegmentRecorder:
         self._callback: Callable[[bytes, float], None] | None = None
         self._raw_frame_callback: Callable[[bytes], None] | None = None
 
-        self._stream: sd.InputStream | None = None
+        self._stream: Any | None = None
         self._mic_running = False
         self._mic_thread: threading.Thread | None = None
         self._frame_queue: list[bytes] = []
@@ -100,6 +109,7 @@ class SegmentRecorder:
                 self._frame_queue.append(bytes(indata))
             self._queue_event.set()
 
+        sd = _sounddevice()
         self._stream = sd.InputStream(
             samplerate=SAMPLE_RATE,
             channels=CHANNELS,
@@ -150,7 +160,7 @@ class SegmentRecorder:
                 try:
                     self._raw_frame_callback(frame)
                 except Exception:
-                    logger.exception("SegmentRecorder: raw frame callback error")
+                    logger.error("SegmentRecorder: raw frame callback error")
 
             # VAD 分段处理
             if self._recording:
@@ -246,7 +256,7 @@ class SegmentRecorder:
                         try:
                             self._callback(segment_bytes, self._speech_start_time)
                         except Exception:
-                            logger.exception("SegmentRecorder: callback error")
+                            logger.error("SegmentRecorder: callback error")
                     return True
                 else:
                     logger.debug(

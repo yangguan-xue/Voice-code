@@ -1,177 +1,120 @@
-<p align="center">
-  <br>
-  <img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="License">
-  <img src="https://img.shields.io/badge/python-≥3.12-green" alt="Python">
-  <img src="https://img.shields.io/badge/voice-yes-brightgreen" alt="Voice">
-  <br><br>
-</p>
+# Voice Code · 语码
 
-<h1 align="center">
-  ⚡ Voice Code · 语码
-</h1>
+Voice Code is a local-first coding agent with CLI, TUI, voice, desktop, and a
+hosted web demo surface.
 
-<p align="center">
-  <i>An interactive coding agent with voice mode</i>
-  <br>
-  <b>语音驱动的编程助手，会听会说</b>
-</p>
+- Public web demo: https://voice-code.yangguanxue.top/
+- Repository: https://github.com/yangguan-xue/Voice-code
+- License: AGPL-3.0
+- Python: 3.12+
 
-<p align="center">
-  <a href="#english">🇬🇧 English</a>
-  ·
-  <a href="README.zh.md">🇨🇳 中文</a>
-</p>
+## What You Can Try
 
+| Surface | Status | Notes |
+| --- | --- | --- |
+| CLI / TUI | Ready for local development | Run with `uv run reasoning` |
+| Voice mode | Experimental | Supports wake word, STT, agent loop, and TTS |
+| Desktop app | Demo-ready packaging path | Tauri shell under `desktop/` |
+| Web demo | Deployed preview | Controlled sandbox, invite-code gated |
 
-<p align="center">
-  <b>开发中</b>
-</p>
-
-<br>
-
----
-
-<a id="english"></a>
-
-## 🇬🇧 English
-
-Voice Code (语码) is an interactive coding agent powered by LLM. It runs in your terminal, executes tools on your behalf, and supports speech-driven interaction via voice mode.
-
-### ✨ Features
-
-| | |
-|---|---|
-| **💻 CLI REPL** | Interactive shell with streaming LLM responses |
-| **🎤 Voice Mode** | Speak commands, hear replies — hands-free coding |
-| **🔧 9 Tools** | Bash, file read/write/edit, glob, grep, web fetch, todo, ask |
-| **🧠 Multi-Model** | DeepSeek, OpenAI, or any OpenAI-compatible API |
-| **📦 Context Compression** | Auto-compacts long conversations to save tokens |
-| **📋 Session Persistence** | Save, list, and resume past sessions |
-| **🖥️ TUI** | Textual-based terminal UI with rich rendering |
-
-### 🚀 Quick Start
+## Quick Start
 
 ```bash
-# install
-pip install voice-code
-# or: uv sync
-
-# configure
-cp .env.example .env   # set your LLM_API_KEY
-
-# run
-reasoning               # TUI mode (default)
-reasoning --plain       # CLI REPL mode
-reasoning-voice         # voice mode (experimental)
+uv sync
+cp .env.example .env
+uv run reasoning
 ```
 
-### ⚙️ Configuration
+Plain CLI:
+
+```bash
+uv run reasoning --plain
+```
+
+Voice mode:
+
+```bash
+uv run reasoning-voice
+```
+
+## Configuration
+
+Set a model profile in `.env` or `models.toml`:
 
 ```ini
-# .env
 LLM_API_KEY=sk-xxx
 LLM_BASE_URL=https://api.deepseek.com/v1
 LLM_MODEL_NAME=deepseek-v4-pro
 ```
 
-Multiple model backends via `models.toml`:
+`models.toml` supports multiple OpenAI-compatible profiles.
 
-```toml
-[profiles.deepseek]
-base_url = "https://api.deepseek.com/v1"
-model_name = "deepseek-v4-pro"
-api_key_env = "LLM_API_KEY"
-
-[profiles.openai]
-base_url = "https://api.openai.com/v1"
-model_name = "gpt-4o"
-api_key_env = "OPENAI_API_KEY"
-```
-
-### 🎮 CLI Commands
+## Desktop
 
 ```bash
-reasoning                         # TUI mode (default)
-reasoning --plain                  # CLI REPL mode
-reasoning --profile deepseek       # with model profile
-reasoning --permission-mode bypass  # skip confirmations
+cd desktop
+pnpm install
+pnpm test
+pnpm build
 ```
 
-#### REPL Commands
+Windows runtime installer build:
 
-| Command | Description |
-|---------|-------------|
-| `/help` | Show available commands |
-| `/exit` | Exit |
-| `/sessions` | List recent sessions |
-| `/resume <id>` | Resume a previous session |
+```powershell
+pnpm tauri:build:windows:runtime
+```
 
-### 🎙️ Voice Mode
+The runtime installer bundles an app-owned Python runtime during packaging, so
+end users do not need to install Python or `uv` just to launch the desktop app.
+They still need valid model configuration, and Git is required for Git-backed
+project workflows.
+
+## Web Demo
+
+Frontend:
 
 ```bash
-reasoning-voice                   # wake word: "你好小奕"
-reasoning-voice --no-wake         # skip wake word
-reasoning-voice --debug           # verbose logging
+cd web
+pnpm install
+pnpm test -- --run
+pnpm build
 ```
 
-```
-🎤 listening → ⚙️ working → 🔊 speaking → 🎤 listening
-     speak        agent acts      TTS replies
-```
-
-**Backends:**
-- **Self-hosted** — STT (SenseVoice) + TTS (VoxCPM2 / Fish-Speech)
-- **Cloud** — Step Fun API
-
-### 🛠️ Tools
-
-| Tool | Description |
-|------|-------------|
-| Bash | Execute shell commands |
-| FileRead | Read files with offset/limit |
-| FileWrite | Write/create files |
-| FileEdit | Exact string replacement |
-| Glob | File pattern search |
-| Grep | Content search |
-| WebFetch | HTTP GET |
-| TodoWrite | Task list management |
-| AskUser | Ask the user |
-
-### 🏗️ Architecture
-
-```
-src/voice_code/
-├── cli.py / voice_cli.py / tui.py   # Entry points
-├── agent/loop.py                     # Query loop
-├── tools/                            # Tool implementations
-├── compact/                          # Context compression
-├── session/                          # Transcript persistence
-├── voice/                            # Voice mode
-├── llm/models.py                     # Model factory
-├── permissions.py                    # Safety gates
-└── prompts.py                        # System prompt
-```
-
-### ✅ Quality
+Backend:
 
 ```bash
-ruff check src/
-mypy src/
-pytest tests/ -v
+uv run reasoning-web-demo --host 127.0.0.1 --port 8787
 ```
 
-### ⚠️ Security
+Deployment templates live in `deploy/web-demo/`.
 
-Voice Code executes LLM-generated code on your machine. The permission system requires confirmation for dangerous operations. `--permission-mode bypass` disables all checks — only use in trusted environments.
+## Project Layout
 
-See [SECURITY.md](SECURITY.md) for details.
+```text
+src/voice_code/      Python agent runtime
+desktop/             Tauri desktop shell
+web/                 React web demo frontend
+deploy/web-demo/     Nginx/systemd/Docker demo deployment templates
+tools/               Release packaging helpers
+tests/               Python test suite
+docs/                Public architecture and release notes
+```
 
-### 📄 License
+## Safety
 
-AGPL-3.0 — see [LICENSE](LICENSE)
+Voice Code can execute shell commands and edit files. Keep permission prompts on
+for normal use, review tool requests before approving them, and do not run the
+agent in sensitive directories unless you trust the model profile and prompt.
 
----
+The public web demo is a constrained sandbox. It is designed for project
+preview, not for arbitrary hosted development.
 
-<p align="center">
-  <a href="README.zh.md">🇨🇳 中文版 →</a>
-</p>
+## Public Repository Policy
+
+This repository is the public release surface. It excludes private reference
+code, local workspaces, generated runtime bundles, virtual environments, build
+outputs, and credentials.
+
+## License
+
+AGPL-3.0. See [LICENSE](LICENSE).

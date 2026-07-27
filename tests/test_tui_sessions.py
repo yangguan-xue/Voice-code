@@ -30,9 +30,9 @@ class _SidebarProbeApp(App[None]):
             self.query_one("#sidebar", SessionSidebarView).sync_groups(
                 [
                     SessionGroup(
-                        key="/Users/example/programs/reasoning",
+                        key="/Users/example/workspace/voice-code",
                         label="reasoning",
-                        project_path="/Users/example/programs/reasoning",
+                        project_path="/Users/example/workspace/voice-code",
                         sessions=[
                             SessionSummary(
                                 id="session-1",
@@ -40,7 +40,7 @@ class _SidebarProbeApp(App[None]):
                                 message_count=12,
                                 updated_at="2026-07-01 10:00:00",
                                 project_label="reasoning",
-                                project_path="/Users/example/programs/reasoning",
+                                project_path="/Users/example/workspace/voice-code",
                                 is_current=True,
                             ),
                             SessionSummary(
@@ -49,7 +49,7 @@ class _SidebarProbeApp(App[None]):
                                 message_count=6,
                                 updated_at="2026-07-01 11:00:00",
                                 project_label="reasoning",
-                                project_path="/Users/example/programs/reasoning",
+                                project_path="/Users/example/workspace/voice-code",
                                 is_current=False,
                             ),
                         ],

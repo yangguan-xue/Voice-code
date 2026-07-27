@@ -50,11 +50,11 @@ class TtsClient:
                 )
                 response.raise_for_status()
         except httpx.TimeoutException:
-            logger.exception("TTS request timed out")
+            logger.error("TTS request timed out")
             raise RuntimeError("tts request timed out") from None
-        except httpx.HTTPError as e:
-            logger.exception("TTS HTTP request failed")
-            raise RuntimeError(f"tts request failed: {e}") from None
+        except httpx.HTTPError:
+            logger.error("TTS HTTP request failed")
+            raise RuntimeError("tts request failed") from None
 
         content_type = response.headers.get("content-type", "")
         if "application/json" in content_type:
@@ -64,9 +64,8 @@ class TtsClient:
                 logger.error("TTS error response not valid JSON")
                 raise RuntimeError("tts error response parse failed") from None
             if "error" in data:
-                err = data["error"]
-                logger.error("TTS service error: %s", err)
-                raise RuntimeError(f"tts service error: {err.get('message', 'unknown')}")
+                logger.error("TTS service returned an error")
+                raise RuntimeError("tts service error")
 
         audio_bytes = response.content
         if not audio_bytes or len(audio_bytes) < 44:

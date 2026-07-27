@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import logging
 import math
 import re
@@ -17,10 +18,20 @@ from rich.console import Console
 from rich.markdown import Markdown as RichMarkdown
 
 from voice_code.agent.types import AgentEvent, EventType
+from voice_code.delegation import DelegationBrief, DelegationService, DelegationTaskStatus
+from voice_code.delegation.context import collect_delegation_context
+from voice_code.permissions import PermissionContext
+from voice_code.task_supervisor import TaskRejectedError, TaskSupervisor, TaskSupervisorConfig
+from voice_code.telemetry import MetricName, record_counter, record_histogram, start_span
 from voice_code.voice.agent_bridge import AgentBridge
 from voice_code.voice.audio_player import AudioPlayer
 from voice_code.voice.classifier import CommandClassifier, CommandKind
 from voice_code.voice.command_assistant import CommandAssistant
+from voice_code.voice.dashboard import VoiceDashboard, VoiceDelegationItem
+from voice_code.voice.delegation import (
+    DelegationPermissionApprover,
+    create_voice_delegation_brief,
+)
 from voice_code.voice.segment_recorder import SegmentRecorder
 from voice_code.voice.timing import TimingCollector, TurnTiming
 from voice_code.voice.types import (
@@ -80,6 +91,9 @@ class VoiceOrchestrator:
         audio_player: AudioPlayer | None = None,
         command_assistant: CommandAssistant | None = None,
         profile: str | None = None,
+        delegation_service: DelegationService | None = None,
+        display: VoiceDisplay | VoiceDashboard | None = None,
+        console_output: bool = True,
     ) -> None:
         self._stt = stt_client
         self._tts = tts_client
@@ -90,11 +104,15 @@ class VoiceOrchestrator:
         self._player = audio_player or AudioPlayer()
         self._command_assistant = command_assistant
         self._profile = profile
+        self._delegation_service = delegation_service
+        self._last_delegation_id = ""
+        self._console_output = console_output
 
         self._bridge.on_event(self._on_agent_event)
 
         self._state: VoiceState = VoiceState.SLEEPING
         self._state_lock = threading.Lock()
+        self._task_supervisor = TaskSupervisor(TaskSupervisorConfig(max_concurrent_tasks=8))
         self._idle_task: asyncio.Task[None] | None = None
         self._last_event_time = 0.0
         self._running = False
@@ -116,7 +134,7 @@ class VoiceOrchestrator:
         # agent 事件流文本缓冲（防逐字打印）
         self._agent_text_buf = ""
 
-        self._display = VoiceDisplay()
+        self._display = display or VoiceDisplay()
         self._display_frame = 0
 
         self._recorder.on_segment(self._on_speech_segment)
@@ -139,6 +157,32 @@ class VoiceOrchestrator:
     def on_turn_timing(self, callback: Callable[[TurnTiming], None]) -> None:
         """注册每轮耗时回调。"""
         self._on_turn_timing_callbacks.append(callback)
+
+    async def pause_or_resume(self) -> None:
+        """Pause or resume the voice session from a keyboard/UI control."""
+        if self.state in {VoiceState.PAUSED, VoiceState.SLEEPING}:
+            self._display.set_notice("语音会话已继续")
+            await self._enter_listening()
+            return
+        if self.state == VoiceState.WORKING:
+            self._bridge.interrupt()
+        elif self.state == VoiceState.SPEAKING:
+            self._player.stop()
+        self._display.set_notice("语音会话已暂停")
+        await self._enter_paused()
+
+    async def interrupt(self) -> None:
+        """Interrupt active work or playback and return to listening."""
+        if self.state == VoiceState.WORKING:
+            self._bridge.interrupt()
+            self._display.set_notice("已中断当前 Agent 任务")
+        elif self.state == VoiceState.SPEAKING:
+            self._player.stop()
+            self._display.set_notice("已停止播报")
+        else:
+            self._display.set_notice("当前没有可中断的任务")
+            return
+        await self._enter_listening()
 
     # ---- Lifecycle ----
 
@@ -164,6 +208,7 @@ class VoiceOrchestrator:
         self._recorder.close_mic()
         self._player.stop()
         self._display.stop()
+        await self._task_supervisor.shutdown()
         await self._bridge.shutdown()
         logger.info("VoiceOrchestrator: stopped")
 
@@ -172,9 +217,20 @@ class VoiceOrchestrator:
     async def handle_wake_word(self) -> None:
         """处理唤醒词检测。"""
         self._wake_triggered = True
-        _rich_console.print("  ✅ 唤醒成功")
+        self._console_print("  ✅ 唤醒成功")
         await self._transition_to(VoiceState.LISTENING, "wake_word")
         await self._speak(WAKE_CONFIRM_TEXT)
+
+    def _record_stage(self, stage: str, outcome: str, started: float) -> None:
+        record_counter(
+            MetricName.VOICE_STAGE_TOTAL,
+            attributes={"stage": stage, "outcome": outcome},
+        )
+        record_histogram(
+            MetricName.VOICE_STAGE_DURATION_SECONDS,
+            time.perf_counter() - started,
+            attributes={"stage": stage},
+        )
 
     async def handle_speech_segment(self, audio_bytes: bytes) -> None:
         """处理一段完整语音段。"""
@@ -188,15 +244,19 @@ class VoiceOrchestrator:
 
         # Step 1: STT
         self._timing.start_stage()
-        try:
-            text = await self._stt.transcribe_audio(audio_bytes)
-        except RuntimeError:
-            logger.warning("Orchestrator: STT failed")
-            self._timing.end_stt()
-            await self._speak(STT_NOT_CLEAR_TEXT)
-            self._reset_idle_timer()
-            return
+        stage_started = time.perf_counter()
+        with start_span("voice.stt", {"stage": "stt"}):
+            try:
+                text = await self._stt.transcribe_audio(audio_bytes)
+            except RuntimeError:
+                logger.warning("Orchestrator: STT failed")
+                self._timing.end_stt()
+                self._record_stage("stt", "error", stage_started)
+                await self._speak(STT_NOT_CLEAR_TEXT)
+                self._reset_idle_timer()
+                return
         self._timing.end_stt()
+        self._record_stage("stt", "success", stage_started)
 
         if not text.strip():
             self._reset_idle_timer()
@@ -205,17 +265,20 @@ class VoiceOrchestrator:
         stripped = text.strip()
         # 无中文的短文本（Yeah、the、.等） → 非命令
         if not re.search(r'[\u4e00-\u9fff]', stripped) and len(stripped) < 10:
-            logger.info("Orchestrator: ignoring non-Chinese filler '%s'", stripped)
+            logger.info("Orchestrator: ignoring non-Chinese filler")
             self._reset_idle_timer()
             return
 
         # 嗯开头的犹豫词 → 非命令
         if re.match(r'^嗯+', stripped) and len(stripped) < 15:
-            logger.info("Orchestrator: ignoring hesitation '%s'", stripped)
+            logger.info("Orchestrator: ignoring hesitation")
             self._reset_idle_timer()
             return
 
-        _rich_console.print(f"  🎤 {text[:200]}")
+        self._display.set_transcript(stripped)
+        self._display.clear_agent_output()
+        self._display.set_notice("已收到语音指令")
+        self._console_print(f"  🎤 {text[:200]}")
 
         # Step 2: Classify
         self._timing.start_stage()
@@ -249,12 +312,13 @@ class VoiceOrchestrator:
             return
         with self._state_lock:
             self._state = new_state
+        self._display.set_state(new_state)
         logger.info("Orchestrator: %s -> %s (%s)", old.value, new_state.value, reason)
         for cb in self._on_state_change_callbacks:
             try:
                 cb(old, new_state)
             except Exception:
-                logger.exception("Orchestrator: state change callback error")
+                logger.error("Orchestrator: state change callback error")
 
     async def _enter_sleeping(self) -> None:
         await self._transition_to(VoiceState.SLEEPING, "idle_timeout_or_command")
@@ -321,6 +385,11 @@ class VoiceOrchestrator:
     # ---- Agent Submission ----
 
     async def _handle_user_command(self, text: str) -> None:
+        if await self._handle_delegation_control(text):
+            return
+        if self._is_delegation_request(text):
+            await self._submit_delegation(text)
+            return
         if self._command_assistant is None:
             await self._submit_agent_command(text)
             return
@@ -333,6 +402,121 @@ class VoiceOrchestrator:
             started_at=time.monotonic(),
             review_count=0,
         )
+
+    @staticmethod
+    def _is_delegation_request(text: str) -> bool:
+        normalized = text.strip().lower()
+        return any(marker in normalized for marker in ("后台", "委派", "交给 agent", "稍后帮我"))
+
+    async def _submit_delegation(self, text: str) -> None:
+        if self._delegation_service is None:
+            await self._speak("后台任务服务还没有准备好。")
+            self._finish_turn()
+            return
+        context = await collect_delegation_context(self._delegation_service.workspace)
+        brief = create_voice_delegation_brief(
+            text,
+            workspace=str(context["workspace"]),
+            branch=str(context["branch"]),
+            relevant_files=[str(context["active_file"])] if context["active_file"] else [],
+        )
+        brief.context_sources.extend(["active_file", "git_diff", "recent_terminal"])
+        brief.constraints.append("Do not commit, push, deploy, or modify the primary worktree.")
+        brief.acceptance.append("Return a concise summary and a reviewable patch.")
+        if brief.confirmation_required:
+            await self._speak("这个后台任务包含高风险操作，需要你在屏幕上确认后再执行。")
+            self._finish_turn()
+            return
+
+        async def runner(task_brief: DelegationBrief, worktree) -> str:
+            bridge = AgentBridge(
+                profile=self._profile,
+                workspace=str(worktree),
+                permission_context=PermissionContext(
+                    mode="acceptEdits",
+                    approver=DelegationPermissionApprover(),
+                    agent_type="voice-delegation",
+                    task_id=task_brief.task_id,
+                ),
+            )
+            await bridge.start()
+            try:
+                context_text = json.dumps(context, ensure_ascii=False, default=str)
+                task_prompt = (
+                    "Execute this isolated delegated task. Stay within the worktree and do not "
+                    "commit, push, or deploy.\n"
+                    f"Brief: {json.dumps(task_brief.to_dict(), ensure_ascii=False)}\n"
+                    f"Captured context: {context_text}"
+                )
+                return await bridge.run_turn(task_prompt)
+            finally:
+                await bridge.shutdown()
+
+        task = self._delegation_service.submit(brief, runner)
+        self._last_delegation_id = task.brief.task_id
+        self._refresh_delegations()
+        self._start_background_task(
+            self._announce_delegation_completion(task.brief.task_id),
+            task_id=f"voice-delegation-{task.brief.task_id}",
+            name="voice.delegation_completion",
+        )
+        await self._speak("收到，任务已放到隔离后台执行。")
+        await self._enter_listening()
+        self._finish_turn()
+
+    async def _announce_delegation_completion(self, task_id: str) -> None:
+        if self._delegation_service is None:
+            return
+        task = await self._delegation_service.wait(task_id)
+        if task.status == DelegationTaskStatus.COMPLETED:
+            message = f"后台任务已完成：{task.result_summary[:100]}"
+        else:
+            message = f"后台任务未完成：{task.error or task.status}"
+        self._refresh_delegations()
+        self._display.set_notice(message)
+        self._console_print(f"\n  [delegation {task_id}] {message}")
+        if self.state == VoiceState.LISTENING:
+            await self._speak(message)
+            await self._enter_listening()
+
+    async def _handle_delegation_control(self, text: str) -> bool:
+        if self._delegation_service is None:
+            return False
+        normalized = text.strip()
+        task_phrases = ("后台任务", "刚才那个任务", "委派任务")
+        is_task_phrase = any(word in normalized for word in task_phrases)
+        if not is_task_phrase and not any(word in normalized for word in ("合进来", "放弃修改")):
+            return False
+        if any(word in normalized for word in ("状态", "进度", "做到哪")):
+            tasks = self._delegation_service.list_tasks()
+            if not tasks:
+                message = "当前没有后台任务。"
+            else:
+                latest = tasks[-1]
+                message = f"最近的后台任务状态是 {latest.status}。"
+            await self._speak(message)
+        elif "合进来" in normalized:
+            if not self._last_delegation_id:
+                await self._speak("没有可以合入的后台任务。")
+            else:
+                try:
+                    await self._delegation_service.accept_into_workspace(self._last_delegation_id)
+                    self._refresh_delegations()
+                    await self._speak("后台修改已经合入当前工作区。")
+                except (FileNotFoundError, ValueError, RuntimeError) as exc:
+                    await self._speak(f"暂时无法合入：{exc}")
+        elif any(word in normalized for word in ("放弃", "取消")):
+            if not self._last_delegation_id:
+                await self._speak("没有可以放弃的后台任务。")
+            else:
+                await self._delegation_service.discard(self._last_delegation_id)
+                self._refresh_delegations()
+                await self._speak("后台任务及其修改已放弃。")
+        else:
+            return False
+        await self._enter_listening()
+        self._finish_turn()
+        return True
 
     async def _handle_supervisor_decision(
         self,
@@ -443,7 +627,7 @@ class VoiceOrchestrator:
             return
 
     async def _submit_agent_command(self, text: str) -> None:
-        _rich_console.print("  ⚙️ 处理中…")
+        self._console_print("  ⚙️ 处理中…")
         result = await self._run_agent_turn(text)
         if result is None:
             await self._speak(AGENT_FAILED_TEXT)
@@ -467,15 +651,19 @@ class VoiceOrchestrator:
     async def _run_agent_turn(self, text: str) -> str | None:
         await self._enter_working()
         self._timing.start_stage()
+        stage_started = time.perf_counter()
         result_len = 0
-        try:
-            result = await self._bridge.run_turn(text)
-            result_len = len(result)
-        except RuntimeError as e:
-            logger.error("Orchestrator: agent failed: %s", e)
-            self._timing.end_agent(result_len)
-            return None
+        with start_span("voice.agent", {"stage": "agent"}):
+            try:
+                result = await self._bridge.run_turn(text)
+                result_len = len(result)
+            except RuntimeError:
+                logger.error("Orchestrator: agent failed")
+                self._timing.end_agent(result_len)
+                self._record_stage("agent", "error", stage_started)
+                return None
         self._timing.end_agent(result_len)
+        self._record_stage("agent", "success", stage_started)
         return result
 
     # ---- TTS + Playback ----
@@ -499,7 +687,7 @@ class VoiceOrchestrator:
         if len(tts_text) > TTS_MAX_TEXT_CHARS:
             tts_text = tts_text[:TTS_MAX_TEXT_CHARS] + "。以上为部分内容，完整回复请看终端。"
 
-        logger.info("Orchestrator: speaking '%s'", tts_text)
+        logger.info("Orchestrator: speaking %d characters", len(tts_text))
         self._timing.start_stage()
 
         try:
@@ -510,7 +698,7 @@ class VoiceOrchestrator:
                 inference_timesteps=10,
             )
         except Exception:
-            logger.exception("Orchestrator: TTS failed, text preserved in logs")
+            logger.error("Orchestrator: streaming TTS failed")
             self._timing.end_tts(0)
             try:
                 audio = await self._tts.synthesize_text(tts_text, seed=1)
@@ -524,7 +712,7 @@ class VoiceOrchestrator:
                 if prev_state != VoiceState.SPEAKING:
                     await self._enter_listening()
             except Exception:
-                logger.exception("Orchestrator: fallback TTS also failed")
+                logger.error("Orchestrator: fallback TTS also failed")
             return
 
         try:
@@ -545,7 +733,7 @@ class VoiceOrchestrator:
             if prev_state != VoiceState.SPEAKING:
                 await self._enter_listening()
         except Exception:
-            logger.exception("Orchestrator: stream playback failed")
+            logger.error("Orchestrator: stream playback failed")
             self._timing.end_playback()
             if self.state == VoiceState.SPEAKING:
                 await self._enter_listening()
@@ -559,7 +747,29 @@ class VoiceOrchestrator:
         self._last_event_time = self._loop.time()
         if self._idle_task and not self._idle_task.done():
             return
-        self._idle_task = asyncio.create_task(self._idle_watcher())
+        self._idle_task = self._start_background_task(
+            self._idle_watcher(),
+            task_id="voice-idle-watcher",
+            name="voice.idle_watcher",
+        )
+
+    def _start_background_task(
+        self,
+        awaitable,
+        *,
+        task_id: str,
+        name: str,
+    ) -> asyncio.Task:
+        try:
+            return self._task_supervisor.create_task(
+                awaitable,
+                owner="voice",
+                task_id=task_id,
+                name=name,
+            )
+        except TaskRejectedError:
+            logger.warning("voice.background_task.rejected", extra={"error_code": "TASK_REJECTED"})
+            raise
 
     async def _idle_watcher(self) -> None:
         """监控空闲超时。"""
@@ -603,7 +813,11 @@ class VoiceOrchestrator:
         wav_bytes = self._build_short_wav(chunk)
         # 投递到 event loop 做异步唤醒词检测
         self._loop.call_soon_threadsafe(  # type: ignore[union-attr]
-            lambda: asyncio.create_task(self._check_wake_word(wav_bytes))
+            lambda: self._start_background_task(
+                self._check_wake_word(wav_bytes),
+                task_id=f"voice-wake-check-{time.monotonic_ns()}",
+                name="voice.wake_check",
+            )
         )
 
     async def _check_wake_word(self, wav_bytes: bytes) -> None:
@@ -658,6 +872,7 @@ class VoiceOrchestrator:
             chunk = str(event.content)
             if not chunk:
                 return
+            self._display.append_agent_text(chunk)
             self._agent_text_buf += chunk
             while "\n\n" in self._agent_text_buf:
                 block, self._agent_text_buf = self._agent_text_buf.split("\n\n", 1)
@@ -667,14 +882,14 @@ class VoiceOrchestrator:
             if self._agent_text_buf.strip():
                 self._render_md(self._agent_text_buf)
                 self._agent_text_buf = ""
-            _rich_console.print("  ✅ 完成")
+            self._console_print("  ✅ 完成")
 
     def _render_md(self, text: str) -> None:
         text = text.strip()
         if not text:
             return
         if text.replace("|", "").replace("-", "").strip():
-            _rich_console.print(RichMarkdown(text))
+            self._console_print(RichMarkdown(text))
 
     # ---- Internal callbacks (from mic thread) ----
 
@@ -684,8 +899,10 @@ class VoiceOrchestrator:
             return
         seg_arrival = time.monotonic()
         self._loop.call_soon_threadsafe(  # type: ignore[union-attr]
-            lambda: asyncio.create_task(
-                self._handle_segment_timed(audio_bytes, speech_start_time, seg_arrival)
+            lambda: self._start_background_task(
+                self._handle_segment_timed(audio_bytes, speech_start_time, seg_arrival),
+                task_id=f"voice-segment-{time.monotonic_ns()}",
+                name="voice.segment",
             )
         )
 
@@ -701,11 +918,36 @@ class VoiceOrchestrator:
     def _finish_turn(self) -> None:
         """结束当前轮计时，通知回调。"""
         turn = self._timing.finish_turn()
+        self._display.set_timing(turn)
         for cb in self._on_turn_timing_callbacks:
             try:
                 cb(turn)
             except Exception:
-                logger.exception("Orchestrator: turn timing callback error")
+                logger.error("Orchestrator: turn timing callback error")
+
+    def _refresh_delegations(self) -> None:
+        if self._delegation_service is None:
+            self._display.set_delegations([])
+            return
+        try:
+            tasks = self._delegation_service.list_tasks()
+        except (OSError, ValueError, json.JSONDecodeError):
+            logger.error("Orchestrator: failed to refresh delegation display")
+            return
+        self._display.set_delegations(
+            [
+                VoiceDelegationItem(
+                    task_id=task.brief.task_id,
+                    title=task.brief.intent[:60],
+                    status=str(task.status),
+                )
+                for task in tasks
+            ]
+        )
+
+    def _console_print(self, *objects: object) -> None:
+        if self._console_output:
+            _rich_console.print(*objects)
 
     @staticmethod
     def _build_short_wav(pcm_bytes: bytes) -> bytes:
