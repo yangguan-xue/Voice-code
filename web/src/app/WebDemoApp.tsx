@@ -219,6 +219,30 @@ export function WebDemoApp({ clientFactory = createWebDemoClient }: WebDemoAppPr
     window.setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 
+  function downloadPatch() {
+    if (!diff.patchAvailable || !diff.patch?.trim()) {
+      return;
+    }
+    const blob = new Blob([diff.patch], { type: "text/x-patch;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "voice-code-demo.patch";
+    link.style.display = "none";
+    document.body.append(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
+  function downloadDiffArtifact() {
+    if (diff.changedFiles.length === 1) {
+      void downloadSourceFile();
+      return;
+    }
+    downloadPatch();
+  }
+
   if (!session || status === "access" || status === "creating") {
     return (
       <div className="access-screen">
@@ -296,7 +320,7 @@ export function WebDemoApp({ clientFactory = createWebDemoClient }: WebDemoAppPr
             onSubmit={submitPrompt}
           />
         </div>
-        <DiffPanel diff={diff} onDownloadSource={downloadSourceFile} />
+        <DiffPanel diff={diff} onDownload={downloadDiffArtifact} />
       </section>
 
       {pendingPermission ? (

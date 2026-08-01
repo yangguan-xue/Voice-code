@@ -3,12 +3,20 @@ import type { ChangedFile, SandboxDiffPayload } from "../../lib/bridge/protocol"
 
 type DiffPanelProps = {
   diff: SandboxDiffPayload;
-  onDownloadSource: () => void;
+  onDownload: () => void;
 };
 
-export function DiffPanel({ diff, onDownloadSource }: DiffPanelProps) {
+export function DiffPanel({ diff, onDownload }: DiffPanelProps) {
   const changedCount = diff.changedFiles.length;
   const canDownloadSource = changedCount === 1;
+  const canDownloadPatch =
+    changedCount > 1 && diff.patchAvailable && Boolean(diff.patch?.trim());
+  const canDownload = canDownloadSource || canDownloadPatch;
+  const downloadLabel = canDownloadSource
+    ? "下载源文件"
+    : canDownloadPatch
+      ? "下载 patch"
+      : "暂无可下载内容";
   return (
     <aside className="diff-panel" aria-label="沙盒变更">
       <div className="panel-heading">
@@ -19,9 +27,10 @@ export function DiffPanel({ diff, onDownloadSource }: DiffPanelProps) {
         <button
           type="button"
           className="icon-button"
-          aria-label="下载源文件"
-          disabled={!canDownloadSource}
-          onClick={onDownloadSource}
+          aria-label={downloadLabel}
+          title={downloadLabel}
+          disabled={!canDownload}
+          onClick={onDownload}
         >
           <Download size={17} strokeWidth={1.8} aria-hidden="true" />
         </button>
