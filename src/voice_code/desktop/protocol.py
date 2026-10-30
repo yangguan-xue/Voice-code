@@ -96,8 +96,14 @@ class BridgeResponse(BaseModel):
     error: BridgeError | None = None
 
 
-def map_agent_event(session_id: str, event: AgentEvent) -> BridgeEvent:
-    """Map internal AgentEvent values to stable desktop event names."""
+def map_agent_event(session_id: str, event: AgentEvent) -> BridgeEvent | None:
+    """Map internal AgentEvent values to stable desktop event names.
+
+    Compaction notices are internal bookkeeping (status="compact") and are
+    suppressed here so they never surface as web/desktop error messages.
+    """
+    if event.status == "compact":
+        return None
     if event.type == EventType.TEXT:
         return BridgeEvent(
             event="agent.text.delta",

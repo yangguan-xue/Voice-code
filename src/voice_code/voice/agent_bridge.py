@@ -125,7 +125,6 @@ class AgentBridge:
             raise RuntimeError("AgentBridge not started")
 
         final_text_parts: list[str] = []
-        reasoning_parts: list[str] = []
         has_error = False
         error_msg = ""
         finish_reason = "unknown"
@@ -161,9 +160,6 @@ class AgentBridge:
                     if event.type == EventType.TEXT:
                         final_text_parts.append(str(event.content))
 
-                    elif event.type == EventType.REASONING:
-                        reasoning_parts.append(str(event.content))
-
                     elif event.type == EventType.FINISH:
                         finish_reason = event.finish_reason or "completed"
                         if event.finish_reason in ("error", "interrupted"):
@@ -182,15 +178,6 @@ class AgentBridge:
             raise RuntimeError("agent turn timed out") from None
 
         result = "".join(final_text_parts).strip()
-
-        # V0 fallback: 如果模型只产出 REASONING（DeepSeek thinking mode），
-        # 取全部 reasoning 作为播报文本
-        if not result and reasoning_parts:
-            result = "".join(reasoning_parts).strip()
-            logger.info(
-                "AgentBridge: no TEXT, falling back to REASONING (%d parts, %d chars)",
-                len(reasoning_parts), len(result),
-            )
 
         logger.info(
             "AgentBridge finished: events=%s, finish=%s, result_chars=%d",

@@ -94,6 +94,7 @@ class VoiceOrchestrator:
         delegation_service: DelegationService | None = None,
         display: VoiceDisplay | VoiceDashboard | None = None,
         console_output: bool = True,
+        tts_enabled: bool = True,
     ) -> None:
         self._stt = stt_client
         self._tts = tts_client
@@ -107,6 +108,7 @@ class VoiceOrchestrator:
         self._delegation_service = delegation_service
         self._last_delegation_id = ""
         self._console_output = console_output
+        self._tts_enabled = tts_enabled
 
         self._bridge.on_event(self._on_agent_event)
 
@@ -116,6 +118,11 @@ class VoiceOrchestrator:
         self._idle_task: asyncio.Task[None] | None = None
         self._last_event_time = 0.0
         self._running = False
+        self._speech_lock = asyncio.Lock()
+        self._turn_lock = asyncio.Lock()
+        self._tts_lock = asyncio.Lock()
+        self._pause_requested = False
+        self._turn_cancelled = False
         self._on_state_change_callbacks: list[Callable[[VoiceState, VoiceState], None]] = []
 
         # 计时器
@@ -161,9 +168,13 @@ class VoiceOrchestrator:
     async def pause_or_resume(self) -> None:
         """Pause or resume the voice session from a keyboard/UI control."""
         if self.state in {VoiceState.PAUSED, VoiceState.SLEEPING}:
+            self._pause_requested = False
+            self._turn_cancelled = True
             self._display.set_notice("语音会话已继续")
             await self._enter_listening()
             return
+        self._pause_requested = True
+        self._turn_cancelled = True
         if self.state == VoiceState.WORKING:
             self._bridge.interrupt()
         elif self.state == VoiceState.SPEAKING:
@@ -173,6 +184,8 @@ class VoiceOrchestrator:
 
     async def interrupt(self) -> None:
         """Interrupt active work or playback and return to listening."""
+        self._pause_requested = False
+        self._turn_cancelled = True
         if self.state == VoiceState.WORKING:
             self._bridge.interrupt()
             self._display.set_notice("已中断当前 Agent 任务")
@@ -218,7 +231,8 @@ class VoiceOrchestrator:
         """处理唤醒词检测。"""
         self._wake_triggered = True
         self._console_print("  ✅ 唤醒成功")
-        await self._transition_to(VoiceState.LISTENING, "wake_word")
+        self._pause_requested = False
+        await self._enter_listening()
         await self._speak(WAKE_CONFIRM_TEXT)
 
     def _record_stage(self, stage: str, outcome: str, started: float) -> None:
@@ -234,7 +248,11 @@ class VoiceOrchestrator:
 
     async def handle_speech_segment(self, audio_bytes: bytes) -> None:
         """处理一段完整语音段。"""
-        if self.state != VoiceState.LISTENING:
+        if self.state not in {
+            VoiceState.LISTENING,
+            VoiceState.WORKING,
+            VoiceState.SPEAKING,
+        }:
             logger.debug("Orchestrator: ignoring speech in state %s", self.state)
             return
 
@@ -242,59 +260,95 @@ class VoiceOrchestrator:
             logger.debug("Orchestrator: empty audio segment")
             return
 
-        # Step 1: STT
-        self._timing.start_stage()
-        stage_started = time.perf_counter()
-        with start_span("voice.stt", {"stage": "stt"}):
-            try:
-                text = await self._stt.transcribe_audio(audio_bytes)
-            except RuntimeError:
-                logger.warning("Orchestrator: STT failed")
+        # Serialize recognition/classification so the shared turn timing state is not
+        # overwritten by multiple VAD callbacks. Control commands still run while an
+        # agent turn is active because the agent turn lock is acquired later.
+        async with self._speech_lock:
+            if self.state not in {
+                VoiceState.LISTENING,
+                VoiceState.WORKING,
+                VoiceState.SPEAKING,
+            }:
+                return
+
+            track_timing = not self._turn_lock.locked()
+            if track_timing:
+                self._timing.start_stage()
+            stage_started = time.perf_counter()
+            with start_span("voice.stt", {"stage": "stt"}):
+                try:
+                    text = await self._stt.transcribe_audio(audio_bytes)
+                except Exception:
+                    logger.warning("Orchestrator: STT failed", exc_info=True)
+                    if track_timing:
+                        self._timing.end_stt()
+                        self._record_stage("stt", "error", stage_started)
+                    if self.state == VoiceState.LISTENING:
+                        await self._speak(STT_NOT_CLEAR_TEXT)
+                    self._reset_idle_timer()
+                    return
+            if track_timing:
                 self._timing.end_stt()
-                self._record_stage("stt", "error", stage_started)
-                await self._speak(STT_NOT_CLEAR_TEXT)
+                self._record_stage("stt", "success", stage_started)
+
+            if not text.strip():
                 self._reset_idle_timer()
                 return
-        self._timing.end_stt()
-        self._record_stage("stt", "success", stage_started)
 
-        if not text.strip():
-            self._reset_idle_timer()
-            return
+            stripped = text.strip()
+            # 无中文的短文本（Yeah、the、.等） → 非命令
+            if not re.search(r'[\u4e00-\u9fff]', stripped) and len(stripped) < 10:
+                logger.info("Orchestrator: ignoring non-Chinese filler")
+                self._reset_idle_timer()
+                return
 
-        stripped = text.strip()
-        # 无中文的短文本（Yeah、the、.等） → 非命令
-        if not re.search(r'[\u4e00-\u9fff]', stripped) and len(stripped) < 10:
-            logger.info("Orchestrator: ignoring non-Chinese filler")
-            self._reset_idle_timer()
-            return
+            # 嗯开头的犹豫词 → 非命令
+            if re.match(r'^嗯+', stripped) and len(stripped) < 15:
+                logger.info("Orchestrator: ignoring hesitation")
+                self._reset_idle_timer()
+                return
 
-        # 嗯开头的犹豫词 → 非命令
-        if re.match(r'^嗯+', stripped) and len(stripped) < 15:
-            logger.info("Orchestrator: ignoring hesitation")
-            self._reset_idle_timer()
-            return
+            self._display.set_transcript(stripped)
+            self._display.clear_agent_output()
+            self._display.set_notice("已收到语音指令")
+            self._console_print(f"  🎤 {text[:200]}")
 
-        self._display.set_transcript(stripped)
-        self._display.clear_agent_output()
-        self._display.set_notice("已收到语音指令")
-        self._console_print(f"  🎤 {text[:200]}")
+            # Step 2: Classify
+            if track_timing:
+                self._timing.start_stage()
+            try:
+                if self._classifier is not None:
+                    decision = await self._classifier.classify(text)
+                else:
+                    from voice_code.voice.types import CommandDecision
 
-        # Step 2: Classify
-        self._timing.start_stage()
-        if self._classifier is not None:
-            decision = await self._classifier.classify(text)
-        else:
-            from voice_code.voice.types import CommandDecision
-            decision = CommandDecision(kind=CommandKind.AGENT_COMMAND, text=text)
-        self._timing.end_classify()
+                    decision = CommandDecision(kind=CommandKind.AGENT_COMMAND, text=text)
+            except Exception:
+                logger.warning("Orchestrator: command classification failed", exc_info=True)
+                if track_timing:
+                    self._timing.end_classify()
+                    self._record_stage("classify", "error", stage_started)
+                self._display.set_notice("暂时无法判断这句话，请再说一次")
+                self._reset_idle_timer()
+                return
+            if track_timing:
+                self._timing.end_classify()
 
-        logger.info("Orchestrator: classified -> %s", decision.kind.value)
+            logger.info("Orchestrator: classified -> %s", decision.kind.value)
 
-        # Step 3: Route
+        # Step 3: Route. Ordinary requests are dropped while a turn is active; control
+        # commands are intentionally handled outside that lock so they can interrupt it.
         if decision.kind == CommandKind.AGENT_COMMAND:
+            if self.state != VoiceState.LISTENING or self._turn_lock.locked():
+                logger.info("Orchestrator: dropping agent speech while a turn is active")
+                self._display.set_notice("当前任务仍在执行，请说停止或按 Esc")
+                return
             self._reset_idle_timer()
-            await self._handle_user_command(decision.text)
+            async with self._turn_lock:
+                if self.state != VoiceState.LISTENING:
+                    return
+                self._turn_cancelled = False
+                await self._handle_user_command(decision.text)
 
         elif decision.kind == CommandKind.CONTROL_COMMAND:
             self._reset_idle_timer()
@@ -322,13 +376,20 @@ class VoiceOrchestrator:
 
     async def _enter_sleeping(self) -> None:
         await self._transition_to(VoiceState.SLEEPING, "idle_timeout_or_command")
-        self._recorder.close_mic()
+        self._pause_requested = False
+        self._recorder.stop()
+        # Sleeping keeps the input stream alive because wake-word detection consumes
+        # raw frames even though VAD recording is disabled.
+        self._recorder.open_mic()
+        self._recorder.drain_queue()
         self._wake_triggered = False
         with self._wake_lock:
             self._wake_buf = bytearray()
 
     async def _enter_paused(self) -> None:
+        self._pause_requested = True
         await self._transition_to(VoiceState.PAUSED, "pause_command")
+        self._recorder.stop()
         self._recorder.close_mic()
         self._wake_triggered = False
         with self._wake_lock:
@@ -345,25 +406,29 @@ class VoiceOrchestrator:
         await self._transition_to(VoiceState.WORKING, "agent_submitted")
 
     async def _enter_speaking(self) -> None:
-        # 播报前彻底关麦（关闭硬件 InputStream），避免与播放器 OutputStream 冲突
-        self._recorder.close_mic()
+        # Keep input available for voice interruption while only control commands are
+        # accepted from segments recorded during playback.
+        self._recorder.open_mic()
+        self._recorder.drain_queue()
         await self._transition_to(VoiceState.SPEAKING, "tts_started")
+        self._recorder.start()
 
     # ---- Control Commands ----
 
     async def _handle_control_command(self, control_name: str) -> None:
         logger.info("Orchestrator: control command: %s", control_name)
 
-        if control_name == "stop_agent":
+        if control_name in {"stop_agent", "stop_speaking"}:
+            self._turn_cancelled = True
             if self.state == VoiceState.WORKING:
                 self._bridge.interrupt()
                 logger.info("Orchestrator: agent interrupted")
-            await self._enter_listening()
-
-        elif control_name == "stop_speaking":
-            if self.state == VoiceState.SPEAKING:
+            elif self.state == VoiceState.SPEAKING:
                 self._player.stop()
                 logger.info("Orchestrator: playback stopped")
+            else:
+                return
+            self._pause_requested = False
             await self._enter_listening()
 
         elif control_name == "report_status":
@@ -375,6 +440,12 @@ class VoiceOrchestrator:
             await self._enter_sleeping()
 
         elif control_name == "pause":
+            self._pause_requested = True
+            self._turn_cancelled = True
+            if self.state == VoiceState.WORKING:
+                self._bridge.interrupt()
+            elif self.state == VoiceState.SPEAKING:
+                self._player.stop()
             await self._speak(PAUSE_CONFIRM_TEXT)
             await self._enter_paused()
 
@@ -588,14 +659,20 @@ class VoiceOrchestrator:
 
             dispatch_count += 1
             result = await self._run_agent_turn(task)
+            if self._turn_cancelled or self._pause_requested:
+                await self._restore_after_turn()
+                self._reset_idle_timer()
+                self._finish_turn()
+                return
             if result is None:
                 await self._speak(AGENT_FAILED_TEXT)
-                await self._enter_listening()
+                await self._restore_after_turn()
                 self._reset_idle_timer()
                 self._finish_turn()
                 return
 
             current_review_count += 1
+            self._display.set_notice("正在审核 Agent 结果")
             decision = await self._command_assistant.review_agent_result(
                 user_text=user_text,
                 task=task,
@@ -614,14 +691,14 @@ class VoiceOrchestrator:
                 SupervisorAction.FAIL,
             }:
                 await self._speak(decision.message or result or SUPERVISOR_FAILED_TEXT)
-                await self._enter_listening()
+                await self._restore_after_turn()
                 self._reset_idle_timer()
                 self._finish_turn()
                 return
 
             logger.warning("Orchestrator: unexpected review action %s", decision.action)
             await self._speak(SUPERVISOR_FAILED_TEXT)
-            await self._enter_listening()
+            await self._restore_after_turn()
             self._reset_idle_timer()
             self._finish_turn()
             return
@@ -629,9 +706,14 @@ class VoiceOrchestrator:
     async def _submit_agent_command(self, text: str) -> None:
         self._console_print("  ⚙️ 处理中…")
         result = await self._run_agent_turn(text)
+        if self._turn_cancelled or self._pause_requested:
+            await self._restore_after_turn()
+            self._reset_idle_timer()
+            self._finish_turn()
+            return
         if result is None:
             await self._speak(AGENT_FAILED_TEXT)
-            await self._enter_listening()
+            await self._restore_after_turn()
             self._reset_idle_timer()
             self._finish_turn()
             return
@@ -640,10 +722,10 @@ class VoiceOrchestrator:
             spoken = await self._bridge.summarize_for_speech(result)
             await self._enter_speaking()
             await self._speak(spoken)
-            await self._enter_listening()
+            await self._restore_after_turn()
         else:
             logger.info("Orchestrator: agent returned empty result")
-            await self._enter_listening()
+            await self._restore_after_turn()
 
         self._reset_idle_timer()
         self._finish_turn()
@@ -657,8 +739,8 @@ class VoiceOrchestrator:
             try:
                 result = await self._bridge.run_turn(text)
                 result_len = len(result)
-            except RuntimeError:
-                logger.error("Orchestrator: agent failed")
+            except Exception:
+                logger.error("Orchestrator: agent failed", exc_info=True)
                 self._timing.end_agent(result_len)
                 self._record_stage("agent", "error", stage_started)
                 return None
@@ -666,15 +748,26 @@ class VoiceOrchestrator:
         self._record_stage("agent", "success", stage_started)
         return result
 
+    async def _restore_after_turn(self) -> None:
+        """Restore the user-requested state after an agent turn exits."""
+        if self._pause_requested:
+            await self._enter_paused()
+        elif self._running or self.state != VoiceState.PAUSED:
+            await self._enter_listening()
+
     # ---- TTS + Playback ----
 
     async def _speak(self, text: str) -> None:
+        async with self._tts_lock:
+            await self._speak_locked(text)
+
+    async def _speak_locked(self, text: str) -> None:
         """将文本合成语音并播放（流式）。
 
         调用者应负责预先调用 bridge.summarize_for_speech（如果需要对长文本摘要）。
         _speak 自身只做长度兜底截断。
         """
-        if not text or not text.strip():
+        if not self._tts_enabled or not text or not text.strip():
             return
 
         tts_text = text.strip()
@@ -689,54 +782,87 @@ class VoiceOrchestrator:
 
         logger.info("Orchestrator: speaking %d characters", len(tts_text))
         self._timing.start_stage()
+        previous_state = self.state
+        if previous_state != VoiceState.SPEAKING:
+            await self._enter_speaking()
 
+        stream = None
+        interrupted = False
         try:
-            stream = self._tts.synthesize_stream(
-                tts_text,
-                seed=1,
-                cfg_value=2.0,
-                inference_timesteps=10,
-            )
-        except Exception:
-            logger.error("Orchestrator: streaming TTS failed")
-            self._timing.end_tts(0)
-            try:
-                audio = await self._tts.synthesize_text(tts_text, seed=1)
-                self._timing.end_tts(len(audio))
-                prev_state = self.state
-                if prev_state != VoiceState.SPEAKING:
-                    await self._enter_speaking()
-                self._timing.start_stage()
-                await self._loop.run_in_executor(None, self._player.play_wav_bytes, audio)
-                self._timing.end_playback()
-                if prev_state != VoiceState.SPEAKING:
-                    await self._enter_listening()
-            except Exception:
-                logger.error("Orchestrator: fallback TTS also failed")
-            return
-
-        try:
-            prev_state = self.state
-            if prev_state != VoiceState.SPEAKING:
-                await self._enter_speaking()
+            begin_stream = getattr(self._player, "begin_stream", None)
+            if callable(begin_stream):
+                begin_stream()
 
             first = True
-            async for chunk, sr in stream:
-                if first:
-                    self._timing.end_tts(0)
-                    self._timing.start_stage()
-                    first = False
-                await self._player.play_chunk(chunk, sr)
-            await self._player.close_stream()
-            self._timing.end_playback()
+            try:
+                stream = self._tts.synthesize_stream(
+                    tts_text,
+                    seed=1,
+                    cfg_value=2.0,
+                    inference_timesteps=10,
+                )
+                async for chunk, sr in stream:
+                    stop_requested = getattr(self._player, "stop_requested", None)
+                    if callable(stop_requested) and stop_requested():
+                        interrupted = True
+                        break
+                    if first:
+                        self._timing.end_tts(0)
+                        self._timing.start_stage()
+                        first = False
+                    played = await self._player.play_chunk(chunk, sr)
+                    if played is False:
+                        interrupted = True
+                        break
+                if not interrupted:
+                    await self._player.close_stream()
+                    self._timing.end_playback()
+                    return
+            except Exception:
+                stop_requested = getattr(self._player, "stop_requested", None)
+                interrupted = bool(callable(stop_requested) and stop_requested())
+                if not interrupted:
+                    logger.warning("Orchestrator: streaming TTS failed", exc_info=True)
+            finally:
+                if stream is not None and interrupted:
+                    aclose = getattr(stream, "aclose", None)
+                    if callable(aclose):
+                        await aclose()
+                try:
+                    await self._player.close_stream()
+                except Exception:
+                    logger.debug("Orchestrator: failed to close TTS stream", exc_info=True)
 
-            if prev_state != VoiceState.SPEAKING:
-                await self._enter_listening()
-        except Exception:
-            logger.error("Orchestrator: stream playback failed")
+            if interrupted:
+                return
+
+            # The provider may fail during async iteration, so fall back after the
+            # stream has been closed rather than only around generator creation.
+            audio = await self._tts.synthesize_text(tts_text, seed=1)
+            self._timing.end_tts(len(audio))
+            self._timing.start_stage()
+            await asyncio.to_thread(self._player.play_wav_bytes, audio)
             self._timing.end_playback()
-            if self.state == VoiceState.SPEAKING:
-                await self._enter_listening()
+        except Exception:
+            logger.warning("Orchestrator: fallback TTS failed", exc_info=True)
+        finally:
+            if previous_state != VoiceState.SPEAKING:
+                await self._restore_after_speak(previous_state)
+
+    async def _restore_after_speak(self, previous_state: VoiceState) -> None:
+        """Return to the state that requested an auxiliary TTS utterance."""
+        if self.state != VoiceState.SPEAKING:
+            return
+        if self._pause_requested:
+            await self._enter_paused()
+        elif previous_state == VoiceState.WORKING:
+            await self._transition_to(VoiceState.WORKING, "tts_finished")
+        elif previous_state == VoiceState.PAUSED:
+            await self._enter_paused()
+        elif previous_state == VoiceState.SLEEPING:
+            await self._enter_sleeping()
+        else:
+            await self._enter_listening()
 
     # ---- Idle Timeout ----
 
@@ -799,26 +925,36 @@ class VoiceOrchestrator:
             self._display.update(self.state, rms_db)
 
         # sleeping 态：唤醒词检测
-        if self.state != VoiceState.SLEEPING:
+        if self.state != VoiceState.SLEEPING or self._wakeword is None or self._loop is None:
             return
 
         with self._wake_lock:
+            # One STT request at a time is enough for a wake-word detector. Drop
+            # overlapping chunks instead of building an unbounded task backlog.
+            if self._wake_check_scheduled or self._wake_triggered:
+                return
             self._wake_buf.extend(frame_bytes)
             if len(self._wake_buf) < _WAKE_CHUNK_BYTES:
                 return
             chunk = bytes(self._wake_buf[:_WAKE_CHUNK_BYTES])
             self._wake_buf = self._wake_buf[_WAKE_CHUNK_BYTES:]
+            self._wake_check_scheduled = True
 
         # 构建简短 WAV
         wav_bytes = self._build_short_wav(chunk)
         # 投递到 event loop 做异步唤醒词检测
-        self._loop.call_soon_threadsafe(  # type: ignore[union-attr]
-            lambda: self._start_background_task(
-                self._check_wake_word(wav_bytes),
-                task_id=f"voice-wake-check-{time.monotonic_ns()}",
-                name="voice.wake_check",
-            )
-        )
+        def schedule() -> None:
+            try:
+                self._start_background_task(
+                    self._check_wake_word(wav_bytes),
+                    task_id=f"voice-wake-check-{time.monotonic_ns()}",
+                    name="voice.wake_check",
+                )
+            except TaskRejectedError:
+                with self._wake_lock:
+                    self._wake_check_scheduled = False
+
+        self._loop.call_soon_threadsafe(schedule)
 
     async def _check_wake_word(self, wav_bytes: bytes) -> None:
         """异步检查音频片段是否含唤醒词。"""
@@ -828,12 +964,19 @@ class VoiceOrchestrator:
         if not self._wake_chunk_energy_ok(wav_bytes):
             return
         try:
-            text = await self._stt.transcribe_audio(wav_bytes)
-        except RuntimeError:
-            return
-        detected = await self._wakeword.detect_from_bytes(wav_bytes, text)
-        if detected:
-            await self.handle_wake_word()
+            try:
+                text = await self._stt.transcribe_audio(wav_bytes)
+            except Exception:
+                logger.warning("Orchestrator: wake-word STT failed", exc_info=True)
+                return
+            detected = await self._wakeword.detect_from_bytes(wav_bytes, text)
+            if detected:
+                await self.handle_wake_word()
+        except Exception:
+            logger.warning("Orchestrator: wake-word check failed", exc_info=True)
+        finally:
+            with self._wake_lock:
+                self._wake_check_scheduled = False
 
     @staticmethod
     def _frame_rms_db(frame_bytes: bytes) -> float:
@@ -884,6 +1027,32 @@ class VoiceOrchestrator:
                 self._agent_text_buf = ""
             self._console_print("  ✅ 完成")
 
+        elif t == EventType.TOOL_CALL:
+            name = event.tool_name or "tool"
+            self._display.append_agent_text(f"\n[工具] 正在调用 {name}\n")
+            self._display.set_notice(f"正在调用工具：{name}")
+
+        elif t == EventType.TOOL_RESULT:
+            name = event.tool_name or "tool"
+            preview = (event.tool_result or event.content).strip().replace("\n", " ")
+            if len(preview) > 160:
+                preview = preview[:160] + "..."
+            self._display.append_agent_text(f"\n[工具] {name} 完成")
+            if preview:
+                self._display.append_agent_text(f"：{preview}")
+            self._display.append_agent_text("\n")
+            self._display.set_notice(f"工具完成：{name}")
+
+        elif t == EventType.ERROR:
+            if event.status in {"compact", "fallback", "resume"}:
+                return
+            name = event.tool_name or "Agent"
+            preview = event.content.strip().replace("\n", " ")
+            if len(preview) > 160:
+                preview = preview[:160] + "..."
+            self._display.append_agent_text(f"\n[提示] {name}：{preview}\n")
+            self._display.set_notice("Agent 遇到需要处理的情况")
+
     def _render_md(self, text: str) -> None:
         text = text.strip()
         if not text:
@@ -895,7 +1064,11 @@ class VoiceOrchestrator:
 
     def _on_speech_segment(self, audio_bytes: bytes, speech_start_time: float) -> None:
         """VAD 分段完成回调 — 从 mic 线程投递到 event loop。"""
-        if not self._running or self.state != VoiceState.LISTENING:
+        if not self._running or self.state not in {
+            VoiceState.LISTENING,
+            VoiceState.WORKING,
+            VoiceState.SPEAKING,
+        }:
             return
         seg_arrival = time.monotonic()
         self._loop.call_soon_threadsafe(  # type: ignore[union-attr]
@@ -913,7 +1086,18 @@ class VoiceOrchestrator:
         # VAD 耗时 = 段到达时间 - 首次语音时间
         if speech_start_time > 0:
             self._timing._current.vad_wall_seconds = seg_arrival - speech_start_time
-        await self.handle_speech_segment(audio_bytes)
+        try:
+            await self.handle_speech_segment(audio_bytes)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.error("Orchestrator: speech segment failed", exc_info=True)
+            if self.state == VoiceState.WORKING:
+                self._turn_cancelled = True
+                self._bridge.interrupt()
+            if self.state in {VoiceState.WORKING, VoiceState.SPEAKING}:
+                await self._speak(AGENT_FAILED_TEXT)
+                await self._restore_after_turn()
 
     def _finish_turn(self) -> None:
         """结束当前轮计时，通知回调。"""

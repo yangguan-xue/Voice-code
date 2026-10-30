@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import os
 from collections.abc import Sequence
 
+from voice_code.desktop.startup import serialize_startup_json
 from voice_code.desktop_voice.runtime import create_desktop_voice_runtime, runtime_payload
 from voice_code.llm.models import _load_dotenv
 
@@ -51,7 +51,7 @@ async def run(args: argparse.Namespace) -> None:
     )
     async with bundle.server.run(host=args.host, port=args.port) as running:
         print(
-            json.dumps(runtime_payload(bundle, url=running.url), ensure_ascii=False),
+            serialize_startup_json(runtime_payload(bundle, url=running.url)),
             flush=True,
         )
         await asyncio.Event().wait()

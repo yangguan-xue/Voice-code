@@ -1,8 +1,13 @@
 import {
   isWebDemoEvent,
   isWebDemoResponse,
-  type DemoSessionPayload,
+  type ConversationListPayload,
+  type HistoryTurn,
   type PermissionResolvePayload,
+  type SandboxFilePayload,
+  type TenantLoginResult,
+  type TenantProfile,
+  type TenantSessionPayload,
   type TurnStartResult,
   type WebDemoClientLike,
   type WebDemoEvent,
@@ -32,25 +37,96 @@ export class WebDemoClient implements WebDemoClientLike {
     await this.openSocket();
   }
 
-  async createSession(accessCode: string): Promise<DemoSessionPayload> {
-    const payload = await this.request("demo.session.create", "", { accessCode });
+  // --- REST：鉴权 ---
+
+  async login(accessCode: string): Promise<TenantLoginResult> {
+    const response = await this.http("/api/auth/login", {
+      method: "POST",
+      body: { accessCode }
+    });
     return {
-      sessionId: String(payload.sessionId ?? ""),
-      sessionToken: String(payload.sessionToken ?? ""),
-      expiresAt: String(payload.expiresAt ?? ""),
-      workspaceLabel: String(payload.workspaceLabel ?? ""),
-      permissionMode: String(payload.permissionMode ?? "default"),
-      model: String(payload.model ?? "")
+      tenantToken: String(response.tenantToken ?? ""),
+      tenantId: String(response.tenantId ?? ""),
+      tenantLabel: String(response.tenantLabel ?? ""),
+      expiresAt: String(response.expiresAt ?? "")
     };
+  }
+
+  async fetchMe(token: string): Promise<TenantProfile> {
+    const response = await this.http("/api/auth/me", { token });
+    return {
+      tenantId: String(response.tenantId ?? ""),
+      tenantLabel: String(response.tenantLabel ?? "")
+    };
+  }
+
+  async logout(token: string): Promise<void> {
+    await this.http("/api/auth/logout", { method: "POST", token });
+  }
+
+  // --- REST：会话 ---
+
+  async listConversations(token: string): Promise<ConversationListPayload> {
+    const response = await this.http("/api/conversations", { token });
+    const rawList = Array.isArray(response.conversations) ? response.conversations : [];
+    return {
+      conversations: rawList.map((item) => {
+        const record = item as Record<string, unknown>;
+        return {
+          conversationId: String(record.conversationId ?? ""),
+          title: String(record.title ?? ""),
+          updatedAt: String(record.updatedAt ?? ""),
+          isCurrent: Boolean(record.isCurrent)
+        };
+      }),
+      currentConversationId: String(response.currentConversationId ?? "")
+    };
+  }
+
+  async newConversation(token: string): Promise<TenantSessionPayload> {
+    const response = await this.http("/api/conversations/new", { method: "POST", token });
+    return readSessionPayload(response);
+  }
+
+  async activateConversation(
+    token: string,
+    conversationId: string
+  ): Promise<TenantSessionPayload> {
+    const response = await this.http(
+      `/api/conversations/${encodeURIComponent(conversationId)}/activate`,
+      { method: "POST", token }
+    );
+    return readSessionPayload(response);
+  }
+
+  async getConversationMessages(
+    token: string,
+    conversationId: string
+  ): Promise<HistoryTurn[]> {
+    const response = await this.http(
+      `/api/conversations/${encodeURIComponent(conversationId)}/messages`,
+      { token }
+    );
+    return (Array.isArray(response.turns) ? response.turns : []) as HistoryTurn[];
+  }
+
+  // --- WS：会话与回合 ---
+
+  async attachSession(token: string): Promise<TenantSessionPayload> {
+    const payload = await this.request("tenant.session.attach", token, {});
+    return readSessionPayload(payload);
   }
 
   async startTurn(
     text: string,
-    options: { sessionToken: string; permissionMode: string }
+    options: { sessionToken: string; permissionMode: string; images?: string[] }
   ): Promise<TurnStartResult> {
     const payload = await this.request("turn.start", options.sessionToken, {
       text,
-      permissionMode: options.permissionMode
+      permissionMode: options.permissionMode,
+      ...(options.images?.length
+        ? { images: options.images.map((path) => ({ path })) }
+        : {})
     });
     return {
       sessionId: String(payload.sessionId ?? ""),
@@ -70,12 +146,39 @@ export class WebDemoClient implements WebDemoClientLike {
   async getSandboxFile(
     sessionToken: string,
     path: string
-  ): Promise<{ path: string; content: string }> {
+  ): Promise<SandboxFilePayload> {
     const response = await this.request("sandbox.file.get", sessionToken, { path });
     return {
       path: String(response.path ?? ""),
-      content: String(response.content ?? "")
+      content: String(response.content ?? ""),
+      encoding: String(response.encoding ?? "utf-8"),
+      mimeType: String(response.mimeType ?? "text/plain;charset=utf-8")
     };
+  }
+
+  async uploadFile(
+    token: string,
+    path: string,
+    file: File
+  ): Promise<{ path: string; size: number }> {
+    const base = resolveWebDemoHttpUrl(this.options.url);
+    const response = await fetch(
+      `${base}/api/conversations/current/files?path=${encodeURIComponent(path)}`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": file.type || "application/octet-stream"
+        },
+        body: file
+      }
+    );
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      throw new Error(`上传失败（HTTP ${response.status}）${detail ? `: ${detail.slice(0, 120)}` : ""}`);
+    }
+    const payload = (await response.json()) as Record<string, unknown>;
+    return { path: String(payload.path ?? ""), size: Number(payload.size ?? 0) };
   }
 
   async resetSandbox(sessionToken: string): Promise<boolean> {
@@ -88,6 +191,35 @@ export class WebDemoClient implements WebDemoClientLike {
     this.socket = null;
     this.opening = null;
     this.rejectPending(new Error("Web demo connection closed."));
+  }
+
+  // --- 内部 ---
+
+  private async http(
+    path: string,
+    options: { method?: string; token?: string; body?: Record<string, unknown> }
+  ): Promise<Record<string, unknown>> {
+    const base = resolveWebDemoHttpUrl(this.options.url);
+    const headers: Record<string, string> = {};
+    if (options.token) {
+      headers.Authorization = `Bearer ${options.token}`;
+    }
+    if (options.body) {
+      headers["Content-Type"] = "application/json";
+    }
+    const response = await fetch(`${base}${path}`, {
+      method: options.method ?? "GET",
+      headers,
+      ...(options.body ? { body: JSON.stringify(options.body) } : {})
+    });
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      throw new Error(`请求失败（HTTP ${response.status}）${detail ? `: ${detail.slice(0, 120)}` : ""}`);
+    }
+    if (response.status === 204) {
+      return {};
+    }
+    return (await response.json()) as Record<string, unknown>;
   }
 
   private async request(
@@ -180,11 +312,35 @@ export class WebDemoClient implements WebDemoClientLike {
   }
 }
 
+function readSessionPayload(payload: Record<string, unknown>): TenantSessionPayload {
+  return {
+    sessionId: String(payload.sessionId ?? ""),
+    conversationId: String(payload.conversationId ?? payload.sessionId ?? ""),
+    tenantId: String(payload.tenantId ?? ""),
+    tenantLabel: String(payload.tenantLabel ?? ""),
+    title: String(payload.title ?? ""),
+    workspaceLabel: String(payload.workspaceLabel ?? ""),
+    permissionMode: String(payload.permissionMode ?? "default"),
+    model: String(payload.model ?? "")
+  };
+}
+
 export function createWebDemoClient(emit: (event: WebDemoEvent) => void): WebDemoClientLike {
   return new WebDemoClient({
     url: resolveWebDemoSocketUrl(import.meta.env.VITE_WEB_DEMO_WS_URL),
     emit
   });
+}
+
+export function resolveWebDemoHttpUrl(wsUrl: string): string {
+  const parsed = new URL(wsUrl);
+  parsed.protocol = parsed.protocol === "wss:" ? "https:" : "http:";
+  parsed.pathname = parsed.pathname
+    .replace(/\/(ws-demo|ws)\/?$/, "")
+    .replace(/\/$/, "");
+  parsed.search = "";
+  parsed.hash = "";
+  return parsed.toString().replace(/\/$/, "");
 }
 
 export function resolveWebDemoSocketUrl(explicitUrl?: string): string {

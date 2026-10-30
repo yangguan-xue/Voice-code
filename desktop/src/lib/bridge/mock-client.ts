@@ -50,9 +50,9 @@ export class MockBridgeClient implements DesktopBridgeClient {
           ]
         },
         {
-          id: "D:/program/workspace/programs/notes",
+          id: "D:/workspace/notes",
           folderName: "notes",
-          workspacePath: "D:/program/workspace/programs/notes",
+          workspacePath: "D:/workspace/notes",
           sessions: [{ id: "mock-history-3", title: "整理笔记" }]
         }
       ],

@@ -150,6 +150,35 @@ def _record_llm_tokens(message: object, *, provider: str, model: str) -> None:
         )
 
 
+def _inline_schema_refs(node: object, defs: dict[str, object], depth: int = 0) -> object:
+    """递归展开 JSON Schema 里的 $ref，并剥离 $defs。
+
+    pydantic 生成的 schema 会用 {"$ref": "#/$defs/Xxx"} 引用 $defs 里的子模型；
+    如果只删 $defs 不内联，$ref 就会变成悬空指针，严格的网关/上游会直接 400。
+    """
+    if depth > 20:
+        return {"type": "object"}
+    if isinstance(node, dict):
+        ref = node.get("$ref")
+        if isinstance(ref, str) and ref.startswith("#/$defs/"):
+            target = defs.get(ref[len("#/$defs/"):])
+            siblings = {k: v for k, v in node.items() if k != "$ref"}
+            if isinstance(target, dict):
+                inlined = _inline_schema_refs(target, defs, depth + 1)
+                if isinstance(inlined, dict):
+                    merged = {**inlined, **siblings}
+                    return _inline_schema_refs(merged, defs, depth + 1)
+            return siblings or {"type": "object"}
+        return {
+            k: _inline_schema_refs(v, defs, depth + 1)
+            for k, v in node.items()
+            if k != "$defs"
+        }
+    if isinstance(node, list):
+        return [_inline_schema_refs(item, defs, depth + 1) for item in node]
+    return node
+
+
 def _tools_to_openai_dicts(tools: list[BaseTool]) -> list[dict[str, object]]:
     """将 LangChain BaseTool 列表转换为 OpenAI API dict 格式。"""
     result: list[dict[str, object]] = []
@@ -160,7 +189,13 @@ def _tools_to_openai_dicts(tools: list[BaseTool]) -> list[dict[str, object]]:
         else:
             schema = {"type": "object", "properties": {}, "required": []}
 
-        # 清理 schema 中的 $defs 等（DeepSeek 不兼容）
+        # $defs/$ref 对很多上游不兼容：内联展开后剥离 $defs
+        defs = schema.get("$defs") or {}
+        if isinstance(defs, dict) and defs:
+            schema = _inline_schema_refs(schema, defs)  # type: ignore[assignment]
+        elif "$defs" in schema:
+            schema = {k: v for k, v in schema.items() if k != "$defs"}
+
         params: dict[str, object] = {
             "type": schema.get("type", "object"),
             "properties": schema.get("properties", {}),
@@ -177,6 +212,25 @@ def _tools_to_openai_dicts(tools: list[BaseTool]) -> list[dict[str, object]]:
             },
         })
     return result
+
+
+def _build_user_message(
+    user_input: str, user_images: list[dict[str, str]] | None
+) -> HumanMessage:
+    """构造本轮用户消息；附带图片时转为多模态 content blocks。"""
+    if not user_images:
+        return HumanMessage(content=user_input)
+    blocks: list[dict[str, object]] = [{"type": "text", "text": user_input}]
+    for image in user_images:
+        blocks.append(
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{image['mime']};base64,{image['data_base64']}"
+                },
+            }
+        )
+    return HumanMessage(content=blocks)
 
 
 async def agent_loop(
@@ -197,6 +251,7 @@ async def agent_loop(
     memory_service: MemoryRagService | None = None,
     memory_user_id: str = "local",
     memory_project_key: str | None = None,
+    user_images: list[dict[str, str]] | None = None,
 ) -> AsyncGenerator[AgentEvent, None]:
     """执行 Agent 消息循环 (astream 流式)。
 
@@ -267,22 +322,28 @@ async def agent_loop(
                 )
     transcript_sink = TranscriptSink(transcript_writer)
 
+    user_message = _build_user_message(user_input, user_images)
+
     if resume_messages:
         messages = list(resume_messages)
         messages.extend(memory_msgs)
         messages.extend(pending_notifications)
-        messages.append(HumanMessage(content=user_input))
+        messages.append(user_message)
     else:
         messages = [SystemMessage(content=system_prompt)]
         messages.extend(memory_msgs)
         messages.extend(pending_notifications)
-        messages.append(HumanMessage(content=user_input))
+        messages.append(user_message)
         transcript_sink.write(messages[0])
 
     # Retrieved memories are derived, untrusted context. Persisting them would
     # duplicate private data into every transcript and replay stale injections.
     transcript_sink.write_many(pending_notifications)
-    transcript_sink.write(messages[-1])
+    # 图片块（base64）不进 transcript：体积太大且 resume 时用沙盒路径即可。
+    if user_images:
+        transcript_sink.write(HumanMessage(content=user_input))
+    else:
+        transcript_sink.write(messages[-1])
 
     openai_tools = _tools_to_openai_dicts(tools) if tools else None
     state = AgentRuntimeState(messages=messages, active_model=model)

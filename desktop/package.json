@@ -40,5 +40,5 @@
     "playwright": "^1.61.1",
     "vitest": "latest"
   },
-  "packageManager": "pnpm@10.9.2"
+  "packageManager": "pnpm@10.34.5"
 }

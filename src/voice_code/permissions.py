@@ -115,7 +115,7 @@ class PermissionApprover(Protocol):
 
 @dataclass
 class PermissionContext:
-    mode: str = "default"  # default | acceptEdits | bypassPermissions | dontAsk
+    mode: str = "default"  # default | acceptEdits | bypassPermissions | dontAsk | fullAuto
     session_whitelist: set[str] = field(default_factory=set)
     output_format: OutputFormat = OutputFormat.TEXT
     approver: PermissionApprover | None = None
@@ -940,6 +940,14 @@ def evaluate_tool_permission(
             message="Non-readonly tools require approval by default.",
             risk_category="medium",
         )
+        if ctx.mode == "fullAuto":
+            allow_reason = PermissionReason(
+                type=PermissionReasonType.MODE,
+                message="Permission auto-approved (fullAuto mode).",
+                risk_category=reason.risk_category,
+            )
+            decision = _build_decision(behavior=PermissionBehavior.ALLOW, reason=allow_reason)
+            return PermissionEvaluation(decision=decision, reason=allow_reason)
         decision = _build_decision(behavior=PermissionBehavior.ASK, reason=reason)
         request = _build_request(
             tool_name=tool_name,
@@ -954,6 +962,24 @@ def evaluate_tool_permission(
     matched_rule = max(matched_rules, key=_rule_priority)
     reason = _build_reason(matched_rule)
     behavior = matched_rule.behavior
+
+    if ctx.mode == "fullAuto" and behavior == PermissionBehavior.ASK:
+        allow_reason = PermissionReason(
+            type=PermissionReasonType.MODE,
+            message="Permission auto-approved (fullAuto mode).",
+            risk_category=reason.risk_category,
+        )
+        decision = _build_decision(
+            behavior=PermissionBehavior.ALLOW,
+            reason=allow_reason,
+            matched_rule=matched_rule,
+            message="Permission auto-approved (fullAuto mode).",
+        )
+        return PermissionEvaluation(
+            decision=decision,
+            matched_rule=matched_rule,
+            reason=allow_reason,
+        )
 
     if ctx.mode == "dontAsk" and behavior == PermissionBehavior.ASK:
         deny_reason = PermissionReason(

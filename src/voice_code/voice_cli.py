@@ -13,6 +13,7 @@ from pydantic import SecretStr
 from voice_code import __version__
 from voice_code.delegation import DelegationService
 from voice_code.llm.models import init_model
+from voice_code.permissions import PermissionBehavior, PermissionContext, PermissionDecision
 from voice_code.telemetry import configure_logging
 from voice_code.voice.agent_bridge import AgentBridge
 from voice_code.voice.audio_player import AudioPlayer
@@ -36,6 +37,27 @@ from voice_code.voice.wakeword import WakeWordDetector
 USER_AGENT = f"voice-code-voice/{__version__}"
 
 
+class VoicePermissionApprover:
+    """Non-interactive voice policy for ASK permissions in the full-screen UI."""
+
+    def approve(self, request) -> PermissionDecision:
+        return PermissionDecision(
+            behavior=PermissionBehavior.DENY,
+            message=(
+                "语音模式无法进行屏幕权限确认；已拒绝该操作。"
+                "请改用 TUI/CLI 或后台委派流程处理需要确认的操作。"
+            ),
+        )
+
+
+def _make_voice_permission_context() -> PermissionContext:
+    return PermissionContext(
+        mode="acceptEdits",
+        approver=VoicePermissionApprover(),
+        agent_type="voice",
+    )
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="reasoning-voice", description="语音开发模式 V0")
     p.add_argument("--profile", default=None, help="Model profile (models.toml)")
@@ -57,8 +79,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--stt-url", default="http://localhost:8765", help="STT server URL (自建模式)")
     p.add_argument("--tts-url", default="http://localhost:8775", help="TTS server URL (自建模式)")
     p.add_argument(
-        "--stepfun-key", default=os.environ.get("STEPFUN_API_KEY", ""),
-        help="Step Fun API Key (env: STEPFUN_API_KEY). 设置后使用 Step Fun 语音服务。",
+        "--use-stepfun",
+        action="store_true",
+        help="Use Step Fun for STT/TTS instead of the local services.",
+    )
+    p.add_argument(
+        "--stepfun-key",
+        default="",
+        help=(
+            "Step Fun API Key. Passing this option also enables Step Fun. "
+            "With --use-stepfun, env STEPFUN_API_KEY is used when this is omitted."
+        ),
     )
     p.add_argument(
         "--stepfun-voice", default="cixingnansheng",
@@ -85,11 +116,36 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def _should_use_stepfun(args: argparse.Namespace) -> bool:
+    return bool(args.use_stepfun or args.stepfun_key)
+
+
+def _resolve_stepfun_key(args: argparse.Namespace) -> str:
+    return args.stepfun_key or os.environ.get("STEPFUN_API_KEY", "")
+
+
 def _setup_logging(debug: bool, log_format: str | None = None) -> None:
     configure_logging(
         debug=debug,
         json_output=None if log_format is None else log_format == "json",
     )
+
+
+def _install_stop_handler(
+    loop: asyncio.AbstractEventLoop,
+    stop_event: asyncio.Event,
+) -> None:
+    """Install Ctrl+C handling on Unix and Windows event loops."""
+
+    def _on_sigint() -> None:
+        print("\n正在退出...")
+        stop_event.set()
+
+    try:
+        loop.add_signal_handler(signal.SIGINT, _on_sigint)
+    except (NotImplementedError, RuntimeError):
+        # ProactorEventLoop on Windows does not implement add_signal_handler.
+        signal.signal(signal.SIGINT, lambda _signum, _frame: _on_sigint())
 
 
 def _on_state_change(old: VoiceState, new_state: VoiceState) -> None:
@@ -157,8 +213,8 @@ async def run(args: argparse.Namespace) -> None:
     print("reasoning-voice: 语音开发模式 V0")
 
     # 检查是否使用 Step Fun
-    stepfun_key = args.stepfun_key
-    use_stepfun = bool(stepfun_key)
+    use_stepfun = _should_use_stepfun(args)
+    stepfun_key = _resolve_stepfun_key(args) if use_stepfun else ""
 
     if use_stepfun:
         print(f"  Mode: Step Fun (ASR={ASR_MODEL}, TTS={TTS_MODEL}, voice={args.stepfun_voice})")
@@ -189,16 +245,19 @@ async def run(args: argparse.Namespace) -> None:
 
     # Check services
     stt_ok = await stt_client.health_check()
-    tts_ok = await tts_client.health_check()
+    tts_ok = True if args.no_tts else await tts_client.health_check()
     print(f"  STT health: {'OK' if stt_ok else 'FAIL'}")
-    print(f"  TTS health: {'OK' if tts_ok else 'FAIL'}")
+    print(f"  TTS health: {'DISABLED' if args.no_tts else ('OK' if tts_ok else 'FAIL')}")
     if not stt_ok:
         print("  WARNING: STT service not reachable — voice recognition will fail")
-    if not tts_ok:
+    if not tts_ok and not args.no_tts:
         print("  WARNING: TTS service not reachable — audio playback will fail")
 
     # --test-audio: verify playback independently
     if args.test_audio:
+        if args.no_tts:
+            print("\n  [TEST] --no-tts 已禁用 TTS，跳过音频测试。")
+            return
         print("\n  [TEST] 正在 TTS 合成并播放测试音频...")
         try:
             audio = await tts_client.synthesize_text("测试音频播放正常。我是语音编程助手。")
@@ -217,7 +276,11 @@ async def run(args: argparse.Namespace) -> None:
         temperature=0.0,
         timeout=10.0,
     )
-    bridge = AgentBridge(profile=args.profile, summary_model=summary_model)
+    bridge = AgentBridge(
+        profile=args.profile,
+        summary_model=summary_model,
+        permission_context=_make_voice_permission_context(),
+    )
     await bridge.start()
     print(f"  Agent ready: session={bridge._runtime.session_id}")  # type: ignore[union-attr]
 
@@ -266,6 +329,7 @@ async def run(args: argparse.Namespace) -> None:
         delegation_service=DelegationService(bridge._runtime.cwd),  # type: ignore[union-attr]
         display=dashboard,
         console_output=args.plain_display,
+        tts_enabled=not args.no_tts,
     )
     if args.plain_display:
         orchestrator.on_state_change(_on_state_change)
@@ -291,12 +355,7 @@ async def run(args: argparse.Namespace) -> None:
             # Compact display keeps the original signal-driven lifecycle.
             loop = asyncio.get_running_loop()
             stop_event = asyncio.Event()
-
-            def _on_sigint() -> None:
-                print("\n正在退出...")
-                stop_event.set()
-
-            loop.add_signal_handler(signal.SIGINT, _on_sigint)
+            _install_stop_handler(loop, stop_event)
             await stop_event.wait()
     finally:
         await orchestrator.stop()
@@ -315,6 +374,8 @@ def main(argv: list[str] | None = None) -> None:
         asyncio.run(run(args))
     except KeyboardInterrupt:
         pass
+    except RuntimeError as exc:
+        print(f"语音模式启动失败：{exc}")
 
 
 if __name__ == "__main__":

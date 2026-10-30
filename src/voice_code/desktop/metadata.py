@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import subprocess
 import tomllib
 from collections.abc import Sequence
 from pathlib import Path
 
+from voice_code.desktop.startup import serialize_startup_json
+from voice_code.llm.models import _ROOT_DIR
 from voice_code.session.manager import group_session_summaries, list_session_summaries
-
-_ROOT_DIR = Path(__file__).resolve().parents[3]
 
 
 def collect_desktop_metadata(workspace: str) -> dict[str, object]:
@@ -104,7 +103,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="reasoning-desktop-metadata")
     parser.add_argument("--workspace", required=True)
     args = parser.parse_args(argv)
-    print(json.dumps(collect_desktop_metadata(args.workspace), ensure_ascii=False), flush=True)
+    print(serialize_startup_json(collect_desktop_metadata(args.workspace)), flush=True)
 
 
 if __name__ == "__main__":

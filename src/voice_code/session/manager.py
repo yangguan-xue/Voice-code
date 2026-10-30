@@ -84,7 +84,13 @@ def list_session_summaries(
     if not transcript_dir.exists():
         return []
 
-    files = sorted(transcript_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    # Tie-break identical mtimes by session-id (time-prefixed) so fast successive
+    # writes still order deterministically on coarse-timestamp filesystems.
+    files = sorted(
+        transcript_dir.glob("*.jsonl"),
+        key=lambda p: (p.stat().st_mtime, p.name),
+        reverse=True,
+    )
     results: list[SessionSummary] = []
     for path in files[:limit]:
         reader = TranscriptReader(path)

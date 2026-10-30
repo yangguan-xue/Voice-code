@@ -66,3 +66,16 @@ def test_read_directory():
         result = read.invoke({"file_path": tmp})
         assert "a.txt" in result
         assert "b.txt" in result
+
+
+def test_read_rejects_binary_file():
+    """二进制文件（如 PNG）不应按文本读出乱码。"""
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+        f.write(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
+        tmp = f.name
+    try:
+        result = read.invoke({"file_path": tmp})
+        assert "binary file" in result
+        assert "PNG" not in result.split("binary file")[0]  # 没有二进制内容混进来
+    finally:
+        Path(tmp).unlink()

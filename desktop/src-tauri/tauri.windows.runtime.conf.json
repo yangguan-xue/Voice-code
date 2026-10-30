@@ -6,6 +6,7 @@
       "resources/runtime/python": "runtime/python",
       "resources/runtime/README.txt": "runtime/README.txt",
       "resources/runtime/runtime-manifest.json": "runtime/runtime-manifest.json",
+      "resources/runtime/voice-code-agent.exe": "runtime/voice-code-agent.exe",
       "resources/runtime/voice-code-agent.cmd": "runtime/voice-code-agent.cmd"
     }
   }

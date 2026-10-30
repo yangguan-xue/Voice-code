@@ -248,6 +248,7 @@ describe("App", () => {
       uvPath: null,
       workspaceRoot: "/Users/example/project",
       appLogDir: "/Users/example/Library/Logs/com.voicecode.desktop",
+      frontendLog: "/Users/example/Library/Logs/com.voicecode.desktop/frontend.log",
       textBridgeLog: "/Users/example/Library/Logs/com.voicecode.desktop/desktop-bridge.log",
       voiceBridgeLog:
         "/Users/example/Library/Logs/com.voicecode.desktop/desktop-voice-bridge.log"

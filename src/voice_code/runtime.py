@@ -52,9 +52,13 @@ async def build_workspace_prompt(
     tools: list,
     model_name: str,
     use_cache: bool = True,
+    exclude_skills: frozenset[str] | None = None,
 ) -> str:
     ctx = await get_context(workspace)
-    skills_prompt = render_skills_prompt(discover_skills(workspace))
+    skills = discover_skills(workspace)
+    if exclude_skills:
+        skills = [skill for skill in skills if skill.name not in exclude_skills]
+    skills_prompt = render_skills_prompt(skills)
     def build() -> str:
         return get_system_prompt(
             tools=tools,
@@ -99,6 +103,7 @@ async def bootstrap_runtime(
     session_id: str | None = None,
     resume_messages: list[BaseMessage] | None = None,
     workspace: str | None = None,
+    transcript_dir: str | Path | None = None,
 ) -> RuntimeBootstrap:
     model_kwargs: dict[str, str] = {}
     if profile:
@@ -128,11 +133,17 @@ async def bootstrap_runtime(
     memory_service = build_memory_rag_service()
 
     resolved_session_id = session_id or make_session_id()
+    if transcript_dir is not None:
+        # 调用方（如 web demo 租户）指定 transcript 目录时，state 文件跟随 transcript
+        transcript_path = Path(transcript_dir) / f"{resolved_session_id}.jsonl"
+        state_path = transcript_path.with_suffix(".state.json")
+    else:
+        transcript_path = get_session_path(resolved_session_id)
+        state_path = get_session_state_path(resolved_session_id)
     transcript_writer = TranscriptWriter(
-        get_session_path(resolved_session_id),
+        transcript_path,
         session_meta={"cwd": cwd},
     )
-    state_path = get_session_state_path(resolved_session_id)
     if not state_path.exists():
         save_session_state(
             build_session_runtime_state(
@@ -140,7 +151,8 @@ async def bootstrap_runtime(
                 cwd=cwd,
                 agent_mode="default",
                 model_name=model.model_name,
-            )
+            ),
+            path=state_path,
         )
     return RuntimeBootstrap(
         model=model,

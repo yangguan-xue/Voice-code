@@ -65,9 +65,12 @@ class DesktopVoiceBridge:
         self._parallel_agent_factory = parallel_agent_factory
         self._parallel_agents: dict[str, AgentBridge] = {}
         self._parallel_worktree_paths: dict[str, str] = {}
+        self._emitters: dict[int, VoiceEmitter] = {}
+        self._next_emitter_id = 1
         self._turn_lock = asyncio.Lock()
         self._next_turn_id = 1
         self._active_turn_id: int | None = None
+        self._active_agent_bridge: AgentBridge | None = None
         self._tts_muted = False
         self._assistant_parts: list[str] = []
         self._agent_bridge.on_event(self._on_agent_event)
@@ -90,6 +93,16 @@ class DesktopVoiceBridge:
         previous = self._emit
         self._emit = emit
         return previous
+
+    def add_emit(self, emit: VoiceEmitter) -> int:
+        """Register an additional event subscriber and return its removal token."""
+        token = self._next_emitter_id
+        self._next_emitter_id += 1
+        self._emitters[token] = emit
+        return token
+
+    def remove_emit(self, token: int) -> None:
+        self._emitters.pop(token, None)
 
     async def emit_event(self, event: VoiceBridgeEvent | BridgeEvent) -> None:
         await self._emit_event(event)
@@ -116,6 +129,7 @@ class DesktopVoiceBridge:
             turn_id = self._next_turn_id
             self._next_turn_id += 1
             self._active_turn_id = turn_id
+            self._active_agent_bridge = self._agent_bridge
             self._assistant_parts = []
             agent_bridge = self._agent_bridge
             resolved_worktree_task_id = ""
@@ -153,6 +167,7 @@ class DesktopVoiceBridge:
                         resolved_worktree_task_id,
                         resolved_worktree_path,
                     ) = await self._parallel_agent(worktree_task_id)
+                    self._active_agent_bridge = agent_bridge
 
                 if context_messages:
                     result = await agent_bridge.run_turn(
@@ -185,6 +200,7 @@ class DesktopVoiceBridge:
                 )
             finally:
                 self._active_turn_id = None
+                self._active_agent_bridge = None
                 await self._emit_event(
                     voice_state_event(
                         session_id=self.session_id,
@@ -225,7 +241,8 @@ class DesktopVoiceBridge:
         if self._active_turn_id is None:
             self._audio_player.stop()
             return False
-        self._agent_bridge.interrupt()
+        active_agent = self._active_agent_bridge or self._agent_bridge
+        active_agent.interrupt()
         self._audio_player.stop()
         return True
 
@@ -274,11 +291,17 @@ class DesktopVoiceBridge:
             )
 
     async def _emit_event(self, event: VoiceBridgeEvent | BridgeEvent) -> None:
-        if self._emit is None:
-            return
-        result = self._emit(event)
-        if result is not None:
-            await result
+        emitters: list[VoiceEmitter] = []
+        if self._emit is not None:
+            emitters.append(self._emit)
+        emitters.extend(self._emitters.values())
+        for emitter in emitters:
+            try:
+                result = emitter(event)
+                if result is not None:
+                    await result
+            except Exception:
+                logger.warning("Desktop voice event emitter failed", exc_info=True)
 
     async def _parallel_agent(self, task_id: str) -> tuple[AgentBridge, str, str]:
         if self._worktree_manager is None or self._parallel_agent_factory is None:

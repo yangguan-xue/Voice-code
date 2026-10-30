@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from textual.events import MouseMove
 from textual.widgets import Static
 
 from voice_code.agent.types import AgentEvent, EventType
@@ -115,6 +116,19 @@ async def test_voice_mode_app_refreshes_after_dashboard_changes() -> None:
 
 
 @pytest.mark.asyncio
+async def test_voice_mode_app_ignores_mouse_hover_on_screen() -> None:
+    dashboard = VoiceDashboard()
+    app = VoiceModeApp(dashboard, refresh_interval=0.01)
+
+    async with app.run_test(size=(90, 30)) as pilot:
+        await pilot.mouse_down(None, offset=(0, 26))
+        await pilot._post_mouse_events([MouseMove], None, offset=(1, 26), button=1)
+        await pilot.pause()
+
+        assert "LOCAL SESSION" in str(app.query_one("#voice-runtime", Static).render())
+
+
+@pytest.mark.asyncio
 async def test_voice_mode_keyboard_controls_call_orchestrator() -> None:
     class Controls:
         def __init__(self) -> None:
@@ -203,3 +217,37 @@ async def test_orchestrator_publishes_events_to_dashboard() -> None:
     assert snapshot.agent_output == "架构分析中"
     assert snapshot.timing is not None
     assert snapshot.timing.agent_wall_seconds == 1.4
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_publishes_tool_progress_to_dashboard() -> None:
+    dashboard = VoiceDashboard()
+    bridge = _Bridge()
+    orchestrator = VoiceOrchestrator(
+        stt_client=cast(Any, SimpleNamespace()),
+        tts_client=cast(Any, SimpleNamespace()),
+        agent_bridge=cast(Any, bridge),
+        classifier=cast(Any, _IgnoreClassifier()),
+        segment_recorder=cast(Any, _Recorder()),
+        audio_player=cast(Any, SimpleNamespace()),
+        display=dashboard,
+        console_output=False,
+    )
+
+    await orchestrator._on_agent_event(
+        AgentEvent(type=EventType.TOOL_CALL, turn=1, tool_name="glob")
+    )
+    await orchestrator._on_agent_event(
+        AgentEvent(
+            type=EventType.TOOL_RESULT,
+            turn=1,
+            tool_name="glob",
+            content="README.md\nsrc/",
+            tool_result="README.md\nsrc/",
+        )
+    )
+
+    snapshot = dashboard.snapshot()
+    assert "正在调用 glob" in snapshot.agent_output
+    assert "glob 完成" in snapshot.agent_output
+    assert "README.md src/" in snapshot.agent_output

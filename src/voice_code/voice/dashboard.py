@@ -136,6 +136,7 @@ class VoiceModeApp(App[None]):
     """Dedicated terminal page for a live voice coding session."""
 
     TITLE = "语码 · Voice Code"
+    ALLOW_SELECT = False
     BINDINGS = [
         ("q", "quit", "退出"),
         ("space", "pause_or_resume", "暂停 / 继续"),

@@ -5,7 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from voice_code.web_demo.sandbox import SandboxBoundaryError, SandboxManager
+from voice_code.web_demo.sandbox import (
+    FileTooLargeError,
+    SandboxBoundaryError,
+    SandboxManager,
+)
 
 
 @pytest.mark.asyncio
@@ -118,3 +122,36 @@ async def test_sandbox_diff_includes_patch_for_added_files(tmp_path: Path) -> No
     assert "diff --git a/linux-sandbox.md b/linux-sandbox.md" in diff.patch
     assert "new file mode 100644" in diff.patch
     assert "+# Linux sandbox" in diff.patch
+
+
+@pytest.mark.asyncio
+async def test_sandbox_read_file_returns_base64_for_images(tmp_path: Path) -> None:
+    import base64
+
+    manager = SandboxManager(tmp_path / "sandboxes")
+    sandbox = await manager.create("demo_image")
+    image_bytes = b"\x89PNG\r\n\x1a\nfake"
+    (sandbox.path / "output").mkdir()
+    (sandbox.path / "output" / "cat.png").write_bytes(image_bytes)
+
+    sandbox_file = await manager.read_file(sandbox, "output/cat.png")
+
+    assert sandbox_file.encoding == "base64"
+    assert sandbox_file.mime_type == "image/png"
+    assert base64.b64decode(sandbox_file.content) == image_bytes
+    assert sandbox_file.path == "output/cat.png"
+
+
+@pytest.mark.asyncio
+async def test_sandbox_read_file_rejects_oversized_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from voice_code.web_demo import sandbox as sandbox_module
+
+    monkeypatch.setattr(sandbox_module, "_MAX_BINARY_FILE_BYTES", 4)
+    manager = SandboxManager(tmp_path / "sandboxes")
+    sandbox = await manager.create("demo_large")
+    (sandbox.path / "big.png").write_bytes(b"0123456789")
+
+    with pytest.raises(FileTooLargeError):
+        await manager.read_file(sandbox, "big.png")
