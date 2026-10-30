@@ -1,5 +1,9 @@
 from __future__ import annotations
 
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 
-__version__ = version("voice-code")
+try:
+    __version__ = version("voice-code")
+except PackageNotFoundError:
+    # Frozen launchers do not carry wheel metadata unless it is added explicitly.
+    __version__ = "0.2.0"

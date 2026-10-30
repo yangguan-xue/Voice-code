@@ -175,6 +175,7 @@ struct DesktopDiagnostics {
     uv_path: Option<String>,
     workspace_root: Option<String>,
     app_log_dir: Option<String>,
+    frontend_log: Option<String>,
     text_bridge_log: Option<String>,
     voice_bridge_log: Option<String>,
 }
@@ -369,6 +370,25 @@ fn open_diagnostics_path(path: String) -> Result<(), String> {
         ));
     }
     platform::open_path(&path)
+}
+
+#[tauri::command]
+fn debug_frontend_error(
+    app: AppHandle,
+    kind: Option<String>,
+    message: String,
+    source: Option<String>,
+    line: Option<u32>,
+    column: Option<u32>,
+) {
+    let detail = format!(
+        "frontend error kind={} message={:?} source={:?} line={line:?} column={column:?}",
+        kind.as_deref().unwrap_or("runtime"),
+        bounded_error_preview(&message),
+        source.as_deref().map(bounded_error_preview),
+    );
+    append_frontend_log(&app, &detail);
+    eprintln!("{detail}");
 }
 
 #[tauri::command]
@@ -696,7 +716,11 @@ fn select_workspace_folder(
 }
 
 #[tauri::command]
-fn open_voice_window(app: tauri::AppHandle) -> Result<(), String> {
+async fn open_voice_window(app: tauri::AppHandle) -> Result<(), String> {
+    build_voice_window(app)
+}
+
+fn build_voice_window(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("voice") {
         window.show().map_err(|error| error.to_string())?;
         window.set_focus().map_err(|error| error.to_string())?;
@@ -709,6 +733,60 @@ fn open_voice_window(app: tauri::AppHandle) -> Result<(), String> {
         .min_inner_size(420.0, 520.0)
         .resizable(true)
         .decorations(true)
+        .initialization_script(
+            r#"
+            (() => {
+              const report = (payload) => {
+                try {
+                  window.__TAURI_INTERNALS__?.invoke("debug_frontend_error", payload);
+                } catch (error) {
+                  console.error("Could not report frontend error", error);
+                }
+              };
+              window.addEventListener("error", (event) => {
+                const target = event.target;
+                const resource = target && target !== window
+                  ? (target.src || target.href || target.tagName || null)
+                  : null;
+                report({
+                  kind: resource ? "resource" : "initialization",
+                  message: String(
+                    event.error?.stack ||
+                    event.message ||
+                    (resource ? `Failed to load ${resource}` : "Unknown error")
+                  ),
+                  source: resource || event.filename || null,
+                  line: event.lineno || null,
+                  column: event.colno || null
+                });
+              });
+              window.addEventListener("unhandledrejection", (event) => {
+                report({
+                  kind: "initialization-rejection",
+                  message: String(event.reason?.stack || event.reason || "Unhandled rejection"),
+                  source: null,
+                  line: null,
+                  column: null
+                });
+              });
+            })();
+            "#,
+        )
+        .on_page_load(|window, payload| {
+            eprintln!(
+                "voice window page load: event={:?} url={}",
+                payload.event(),
+                payload.url()
+            );
+            append_frontend_log(
+                window.app_handle(),
+                &format!(
+                    "voice window page load event={:?} url={}",
+                    payload.event(),
+                    payload.url()
+                ),
+            );
+        })
         .build()
         .map_err(|error| error.to_string())?;
 
@@ -740,6 +818,28 @@ fn bridge_log_path(app: &AppHandle, file_name: &str) -> Option<PathBuf> {
         .app_log_dir()
         .ok()
         .map(|directory| directory.join(file_name))
+}
+
+fn append_frontend_log(app: &AppHandle, message: &str) {
+    let Some(path) = app
+        .path()
+        .app_log_dir()
+        .ok()
+        .map(|directory| directory.join("frontend.log"))
+    else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_secs())
+        .unwrap_or_default();
+    let _ = writeln!(file, "unix_seconds={timestamp} {message}");
 }
 
 fn initialize_bridge_log(
@@ -1106,6 +1206,7 @@ pub fn run() {
         .manage(BridgeProcessState::default())
         .invoke_handler(tauri::generate_handler![
             desktop_diagnostics,
+            debug_frontend_error,
             open_diagnostics_path,
             desktop_metadata,
             ensure_desktop_bridge,
@@ -1120,6 +1221,12 @@ pub fn run() {
             resolve_model_config,
             set_active_model_config
         ])
+        .setup(|app| {
+            if env::var_os("VOICE_CODE_DEBUG_OPEN_VOICE").is_some() {
+                build_voice_window(app.handle().clone())?;
+            }
+            Ok(())
+        })
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
                 if window.label() == "main" {
@@ -1200,6 +1307,9 @@ fn desktop_diagnostics_payload(
         voice_bridge_log: app_log_dir
             .as_ref()
             .map(|directory| display_path(directory.join("desktop-voice-bridge.log"))),
+        frontend_log: app_log_dir
+            .as_ref()
+            .map(|directory| display_path(directory.join("frontend.log"))),
         app_log_dir: app_log_dir.map(display_path),
     }
 }
@@ -1272,11 +1382,24 @@ mod tests {
         assert_eq!(diagnostics.workspace_root.as_deref(), Some("/repo/new"));
         assert_eq!(
             diagnostics.text_bridge_log.as_deref(),
-            Some("/tmp/voice-code/logs/desktop-bridge.log")
+            Some(super::display_path(
+                PathBuf::from("/tmp/voice-code/logs").join("desktop-bridge.log"),
+            )
+            .as_str())
         );
         assert_eq!(
             diagnostics.voice_bridge_log.as_deref(),
-            Some("/tmp/voice-code/logs/desktop-voice-bridge.log")
+            Some(super::display_path(
+                PathBuf::from("/tmp/voice-code/logs").join("desktop-voice-bridge.log"),
+            )
+            .as_str())
+        );
+        assert_eq!(
+            diagnostics.frontend_log.as_deref(),
+            Some(super::display_path(
+                PathBuf::from("/tmp/voice-code/logs").join("frontend.log"),
+            )
+            .as_str())
         );
     }
 

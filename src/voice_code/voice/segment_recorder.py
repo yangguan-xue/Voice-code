@@ -110,14 +110,29 @@ class SegmentRecorder:
             self._queue_event.set()
 
         sd = _sounddevice()
-        self._stream = sd.InputStream(
-            samplerate=SAMPLE_RATE,
-            channels=CHANNELS,
-            dtype="int16",
-            blocksize=FRAME_SAMPLES,
-            callback=_audio_callback,
-        )
-        self._stream.start()
+        try:
+            self._stream = sd.InputStream(
+                samplerate=SAMPLE_RATE,
+                channels=CHANNELS,
+                dtype="int16",
+                blocksize=FRAME_SAMPLES,
+                callback=_audio_callback,
+            )
+            self._stream.start()
+        except Exception as exc:
+            stream = self._stream
+            self._mic_running = False
+            self._stream = None
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+            logger.error("SegmentRecorder: microphone initialization failed", exc_info=True)
+            raise RuntimeError(
+                "无法打开麦克风，请检查 Windows 麦克风权限、默认输入设备，"
+                "以及设备是否被其他程序占用。"
+            ) from exc
 
         self._mic_thread = threading.Thread(target=self._mic_loop, daemon=True, name="mic-loop")
         self._mic_thread.start()

@@ -47,6 +47,7 @@ class DesktopAgentBridge:
         text: str,
         *,
         permission_mode: str | None = None,
+        user_images: list[dict[str, str]] | None = None,
     ) -> TurnStartResult:
         user_text = text.strip()
         if not user_text:
@@ -70,9 +71,13 @@ class DesktopAgentBridge:
                 runner_kwargs: dict[str, object] = {"abort_signal": abort_signal}
                 if permission_mode:
                     runner_kwargs["permission_mode"] = permission_mode
+                if user_images:
+                    runner_kwargs["user_images"] = user_images
                 async for agent_event in self._runner(user_text, **runner_kwargs):
                     agent_event.turn = turn_id
-                    await self._emit_event(map_agent_event(self.session_id, agent_event))
+                    bridge_event = map_agent_event(self.session_id, agent_event)
+                    if bridge_event is not None:
+                        await self._emit_event(bridge_event)
                     if agent_event.finish_reason:
                         finish_reason = agent_event.finish_reason
             finally:

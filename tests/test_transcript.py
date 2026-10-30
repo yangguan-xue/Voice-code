@@ -292,6 +292,14 @@ def test_group_session_summaries_groups_by_project(
     writer3.write_message(HumanMessage(content="session three"))
     writer3.close()
 
+    # Stagger mtimes explicitly: the assertions rely on recency order, and fast
+    # successive writes can share one mtime tick on coarse-timestamp filesystems.
+    import os
+
+    base = 1_760_000_000
+    for offset, path in enumerate((path1, path2, path3)):
+        os.utime(path, (base + offset, base + offset))
+
     summaries = list_session_summaries(limit=10)
     groups = group_session_summaries(summaries)
 

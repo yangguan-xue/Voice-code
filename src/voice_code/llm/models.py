@@ -1,6 +1,7 @@
 """LLM 模型工厂 — 支持 .env 和 models.toml profiles。"""
 
 import os
+import sys
 import tomllib
 from ipaddress import ip_address
 from pathlib import Path
@@ -10,7 +11,14 @@ from urllib.parse import urlparse
 import httpx
 from langchain_openai import ChatOpenAI
 
-_ROOT_DIR = Path(__file__).resolve().parent.parent.parent.parent
+
+def _runtime_root() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return Path(__file__).resolve().parent.parent.parent.parent
+
+
+_ROOT_DIR = _runtime_root()
 _ENV_FILE = _ROOT_DIR / ".env"
 _MODELS_FILE = _ROOT_DIR / "models.toml"
 

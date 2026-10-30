@@ -8,7 +8,7 @@ export type WebDemoEventName =
   | "agent.turn.finish"
   | "permission.request"
   | "session.updated"
-  | "session.expired"
+  | "runtime.recycled"
   | "sandbox.diff.updated"
   | "sandbox.reset";
 
@@ -21,7 +21,7 @@ export type WebDemoEvent = {
 };
 
 export type WebDemoRequestMethod =
-  | "demo.session.create"
+  | "tenant.session.attach"
   | "turn.start"
   | "turn.interrupt"
   | "permission.resolve"
@@ -49,13 +49,60 @@ export type WebDemoResponse = {
   };
 };
 
-export type DemoSessionPayload = {
+// 租户模型：sessionToken 即 tenantToken；sessionId 即 conversationId
+export type TenantSessionPayload = {
   sessionId: string;
-  sessionToken: string;
-  expiresAt: string;
+  conversationId: string;
+  tenantId: string;
+  tenantLabel: string;
+  title: string;
   workspaceLabel: string;
   permissionMode: string;
   model: string;
+};
+
+export type TenantLoginResult = {
+  tenantToken: string;
+  tenantId: string;
+  tenantLabel: string;
+  expiresAt: string;
+};
+
+export type TenantProfile = {
+  tenantId: string;
+  tenantLabel: string;
+};
+
+export type ConversationSummary = {
+  conversationId: string;
+  title: string;
+  updatedAt: string;
+  isCurrent: boolean;
+};
+
+export type ConversationListPayload = {
+  conversations: ConversationSummary[];
+  currentConversationId: string;
+};
+
+// 历史回放：与 ConversationTurn 同构（后端已映射好）
+export type HistoryToolEvent = {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+  result: string;
+  resultPreview: string;
+  status: "running" | "completed" | "error";
+};
+
+export type HistoryTurn = {
+  id: number;
+  userText: string;
+  assistantText: string;
+  reasoningText: string;
+  status: "streaming" | "completed" | "error";
+  finishReason: string;
+  tools: HistoryToolEvent[];
 };
 
 export type TurnStartResult = {
@@ -88,18 +135,30 @@ export type PermissionResolvePayload = {
   message?: string;
 };
 
+export type SandboxFilePayload = {
+  path: string;
+  content: string;
+  encoding: string;
+  mimeType: string;
+};
+
 export type WebDemoClientLike = {
   connect: () => Promise<void>;
-  createSession: (accessCode: string) => Promise<DemoSessionPayload>;
+  login: (accessCode: string) => Promise<TenantLoginResult>;
+  fetchMe: (token: string) => Promise<TenantProfile>;
+  logout: (token: string) => Promise<void>;
+  attachSession: (token: string) => Promise<TenantSessionPayload>;
+  listConversations: (token: string) => Promise<ConversationListPayload>;
+  newConversation: (token: string) => Promise<TenantSessionPayload>;
+  activateConversation: (token: string, conversationId: string) => Promise<TenantSessionPayload>;
+  getConversationMessages: (token: string, conversationId: string) => Promise<HistoryTurn[]>;
   startTurn: (
     text: string,
-    options: { sessionToken: string; permissionMode: string }
+    options: { sessionToken: string; permissionMode: string; images?: string[] }
   ) => Promise<TurnStartResult>;
-  resolvePermission: (
-    sessionToken: string,
-    payload: PermissionResolvePayload
-  ) => Promise<boolean>;
-  getSandboxFile: (sessionToken: string, path: string) => Promise<{ path: string; content: string }>;
+  resolvePermission: (sessionToken: string, payload: PermissionResolvePayload) => Promise<boolean>;
+  getSandboxFile: (sessionToken: string, path: string) => Promise<SandboxFilePayload>;
+  uploadFile: (token: string, path: string, file: File) => Promise<{ path: string; size: number }>;
   resetSandbox: (sessionToken: string) => Promise<boolean>;
   close: () => void;
 };

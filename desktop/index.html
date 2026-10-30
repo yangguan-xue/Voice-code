@@ -4,9 +4,30 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>语码</title>
+    <style>
+      html,
+      body {
+        min-height: 100%;
+        margin: 0;
+        background: #000;
+        color: #ebe7de;
+      }
+
+      #boot-screen {
+        display: grid;
+        min-height: 100vh;
+        place-items: center;
+        padding: 24px;
+        box-sizing: border-box;
+        font: 14px/1.5 system-ui, sans-serif;
+        color: #a59f95;
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div id="boot-screen" role="status">语码正在启动...</div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

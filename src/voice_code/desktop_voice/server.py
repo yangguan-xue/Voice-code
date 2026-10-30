@@ -56,7 +56,7 @@ class DesktopVoiceServer:
 
     async def _handle_connection(self, websocket: ServerConnection) -> None:
         sender = _ConnectionSender(websocket)
-        previous_emit = self._bridge.set_emit(sender.emit)
+        emitter_token = self._bridge.add_emit(sender.emit)
         tasks: set[asyncio.Task[None]] = set()
         try:
             async for raw_message in websocket:
@@ -66,7 +66,7 @@ class DesktopVoiceServer:
         except ConnectionClosed:
             pass
         finally:
-            self._bridge.set_emit(previous_emit)
+            self._bridge.remove_emit(emitter_token)
             for task in tasks:
                 task.cancel()
             if tasks:

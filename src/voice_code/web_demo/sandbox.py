@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import difflib
 import os
 import re
@@ -25,6 +26,15 @@ _IGNORED_TEMPLATE_NAMES = {
     ".mypy_cache",
     ".ruff_cache",
 }
+_MAX_BINARY_FILE_BYTES = 8 * 1024 * 1024
+_BINARY_SUFFIX_MIME = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
+
 _IGNORED_DIFF_PARTS = {
     ".reasoning",
     "__pycache__",
@@ -33,6 +43,10 @@ _IGNORED_DIFF_PARTS = {
 
 class SandboxBoundaryError(ValueError):
     """Raised when sandbox setup or path resolution would escape isolation."""
+
+
+class FileTooLargeError(ValueError):
+    """Raised when a requested sandbox file exceeds the download size limit."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,11 +96,15 @@ class SandboxUsage:
 class SandboxFile:
     path: str
     content: str
+    encoding: str = "utf-8"
+    mime_type: str = "text/plain; charset=utf-8"
 
     def to_payload(self) -> dict[str, object]:
         return {
             "path": self.path,
             "content": self.content,
+            "encoding": self.encoding,
+            "mimeType": self.mime_type,
         }
 
 
@@ -200,6 +218,19 @@ class SandboxManager:
         if not resolved.is_file():
             raise FileNotFoundError(relative_path)
         try:
+            if resolved.suffix.lower() in _BINARY_SUFFIX_MIME:
+                size = resolved.stat().st_size
+                if size > _MAX_BINARY_FILE_BYTES:
+                    raise FileTooLargeError(relative_path)
+                content = await asyncio.to_thread(
+                    lambda: base64.b64encode(resolved.read_bytes()).decode("ascii")
+                )
+                return SandboxFile(
+                    path=str(resolved.relative_to(target)).replace("\\", "/"),
+                    content=content,
+                    encoding="base64",
+                    mime_type=_BINARY_SUFFIX_MIME[resolved.suffix.lower()],
+                )
             content = await asyncio.to_thread(
                 resolved.read_text,
                 encoding="utf-8",
@@ -211,6 +242,27 @@ class SandboxManager:
             path=str(resolved.relative_to(target)).replace("\\", "/"),
             content=content,
         )
+
+    async def write_file(
+        self,
+        sandbox: DemoSandbox,
+        relative_path: str,
+        data: bytes,
+        *,
+        max_bytes: int,
+    ) -> str:
+        """Write uploaded bytes into the sandbox; returns the normalized relative path."""
+        if not data:
+            raise ValueError("Uploaded file is empty.")
+        if len(data) > max_bytes:
+            raise FileTooLargeError(relative_path)
+        target = self._existing_target(sandbox)
+        resolved = sandbox.resolve_path(relative_path, allow_missing=True)
+        if resolved.exists() and resolved.is_dir():
+            raise ValueError("Upload target is a directory.")
+        await asyncio.to_thread(resolved.parent.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread(resolved.write_bytes, data)
+        return str(resolved.relative_to(target)).replace("\\", "/")
 
     @staticmethod
     def _diff_pathspec() -> tuple[str, ...]:

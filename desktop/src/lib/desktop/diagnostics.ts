@@ -7,6 +7,7 @@ export type DesktopDiagnostics = {
   uvPath: string | null;
   workspaceRoot: string | null;
   appLogDir: string | null;
+  frontendLog: string | null;
   textBridgeLog: string | null;
   voiceBridgeLog: string | null;
 };

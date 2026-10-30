@@ -8,6 +8,30 @@ This folder contains a minimal Linux deployment template for the Voice Code Web 
 - `nginx-voice-code-web-demo.conf`: nginx site that serves the built frontend and proxies `/ws-demo`.
 - `Dockerfile.sandbox`: Docker image used for Linux-level shell isolation in the demo.
 
+## Tenant model environment variables（2026-10-22 起）
+
+访问码从"全站共享一个"升级为"每租户一个"。`.env` 需要：
+
+```bash
+# 必填：租户访问码 csv，key 同时是 tenant_id 与用户输入的访问码
+REASONING_WEB_DEMO_ACCESS_CODES="alice=Alice,bob=Bob"
+# 可选：租户数据根目录（web-demo.db + 各租户 transcript），默认 <sandbox-root>/_data
+REASONING_WEB_DEMO_DATA_ROOT=/home/ubuntu/voice-code-demo/data
+# 可选：热 runtime 空闲回收阈值（秒，默认 1800）。会话本身永不过期，
+# 回收只释放内存，transcript/sandbox 永久保留，下条消息自动冷启动续接。
+REASONING_WEB_DEMO_IDLE_TIMEOUT_SECONDS=1800
+REASONING_WEB_DEMO_MAX_RUNTIMES=20
+```
+
+旧的 `REASONING_WEB_DEMO_ACCESS_CODE` / `REASONING_WEB_DEMO_TTL_SECONDS` /
+`REASONING_WEB_DEMO_MAX_SESSIONS` 已废弃；游客模式（共享码直接开临时会话）已下线。
+
+**迁移注意**：部署本版本后，旧游客的临时沙箱目录（`<sandbox-root>/demo_*`）
+不再被引用，可手动清理。租户数据在：
+- `<sandbox-root>/tenants/<tenant_id>/workspace/`（持久工作区，每租户配额 256MB）
+- `<data-root>/tenants/<tenant_id>/transcripts/<conversation_id>.jsonl`（对话记录，永久保留）
+- `<data-root>/web-demo.db`（租户/token/会话索引，SQLite）
+
 ## Expected paths
 
 - App checkout: `/home/ubuntu/workspace/workspace/voice-code`
@@ -74,7 +98,29 @@ uv run reasoning-web-demo \
   --port 8787 \
   --sandbox-root /home/ubuntu/voice-code-demo/sandboxes \
   --template-repo /home/ubuntu/workspace/workspace/voice-code/examples/demo-repo \
-  --allowed-origin http://118.25.44.28
+  --allowed-origin https://voice-code.yangguanxue.top
 ```
 
-The backend reads `REASONING_WEB_DEMO_ACCESS_CODE` from `.env`.
+The backend reads `REASONING_WEB_DEMO_ACCESS_CODES` from `.env`.
+
+## Transport
+
+`reasoning-web-demo` uses the FastAPI/uvicorn transport (`src/voice_code/web_demo/app.py`).
+The WebSocket endpoint is served on `/`, `/ws`, and `/ws-demo`; nginx proxies
+`/ws-demo` and the REST API under `/api/` to the same backend.
+
+## REST API
+
+The FastAPI transport also exposes REST endpoints; nginx proxies `/api/` to the
+backend with a 16 MB body limit (image uploads):
+
+- `GET /api/health` - liveness probe
+- `POST /api/auth/login` - exchange an access code for a tenant token
+- `POST /api/auth/logout` - revoke the current tenant token
+- `GET /api/auth/me` - restore the current tenant, requires a Bearer token
+- `GET /api/conversations` - list the tenant's conversations
+- `GET /api/conversations/{id}/messages` - replay conversation history
+- `POST /api/conversations/new` - start a conversation
+- `POST /api/conversations/{id}/activate` - switch the active conversation
+- `POST /api/conversations/current/files?path=...` - upload a file into the sandbox,
+  requires a Bearer token

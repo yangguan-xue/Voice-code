@@ -10,14 +10,16 @@ from voice_code.tools.cache import mark_as_read
 _MAX_LINES = 2000
 _MAX_OUTPUT_CHARS = 50_000
 _EXACT_PATH_HINT = "Report the exact missing path and do not assume a similar file or directory."
+_BINARY_CHECK_BYTES = 8192
 
 
 @tool
 def read(file_path: str, offset: int = 1, limit: int = 2000) -> str:
-    """Read a file from the local filesystem.
+    """Read a text file from the local filesystem.
 
-    Returns the content of a file with line numbers. Supports reading images
-    and PDFs (returned as file attachments).
+    Returns the content of a file with line numbers. Binary files (images,
+    PDFs, archives) cannot be displayed as text and are rejected with a
+    clear message.
 
     Args:
         file_path: Absolute path to the file to read.
@@ -44,6 +46,18 @@ def read(file_path: str, offset: int = 1, limit: int = 2000) -> str:
             f"{e.name}{'/' if e.is_dir() else ''}" for e in sorted(path.iterdir())
         )
         return f"Contents of directory {file_path}:\n{entries}"
+
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(_BINARY_CHECK_BYTES)
+    except OSError as e:
+        return f"<tool_use_error>Error reading file: {e}</tool_use_error>"
+    if b"\x00" in head:
+        return (
+            f"<tool_use_error>Error: {file_path} is a binary file "
+            f"({path.stat().st_size} bytes) and cannot be displayed as text. "
+            "Do not read it; reference it by path instead.</tool_use_error>"
+        )
 
     try:
         content = path.read_text(encoding="utf-8", errors="replace")

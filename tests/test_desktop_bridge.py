@@ -171,6 +171,21 @@ def test_map_agent_event_maps_tool_errors_to_tool_results() -> None:
     }
 
 
+def test_map_agent_event_suppresses_compaction_notices() -> None:
+    for content in (
+        "Conversation compacted (auto)",
+        "Conversation compacted (reactive) — retrying",
+    ):
+        event = AgentEvent(
+            type=EventType.ERROR,
+            turn=1,
+            content=content,
+            phase="compacting",
+            status="compact",
+        )
+        assert map_agent_event("session-1", event) is None
+
+
 def test_desktop_permission_approver_waits_for_ui_resolution() -> None:
     emitted: list[BridgeEvent] = []
     approver = DesktopPermissionApprover(emit=emitted.append, timeout_seconds=1)

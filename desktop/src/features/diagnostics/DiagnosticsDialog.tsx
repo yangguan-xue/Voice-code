@@ -168,6 +168,7 @@ function diagnosticsRows(diagnostics: DesktopDiagnostics) {
     { label: "uv 路径", value: diagnostics.uvPath || "未使用", copyable: true },
     { label: "工作区", value: diagnostics.workspaceRoot || "未设置", copyable: true },
     { label: "日志目录", value: diagnostics.appLogDir || "未设置", copyable: true },
+    { label: "前端日志", value: diagnostics.frontendLog || "未设置", copyable: true },
     { label: "文字日志", value: diagnostics.textBridgeLog || "未设置", copyable: true },
     { label: "语音日志", value: diagnostics.voiceBridgeLog || "未设置", copyable: true }
   ];

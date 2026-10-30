@@ -30,13 +30,13 @@ export function PermissionSheet({
         {filePreview ? <code>{filePreview}</code> : null}
         {commandPreview ? <code>{commandPreview}</code> : null}
         <div className="permission-actions">
-          <button type="button" onClick={() => onResolve("deny", "")}>
+          <button type="button" className="deny-button" onClick={() => onResolve("deny", "")}>
             拒绝
           </button>
-          <button type="button" onClick={() => onResolve("allow", "")}>
+          <button type="button" className="allow-button" onClick={() => onResolve("allow", "")}>
             允许一次
           </button>
-          <button type="button" onClick={() => onResolve("allow", "session")}>
+          <button type="button" className="allow-button" onClick={() => onResolve("allow", "session")}>
             本会话允许
           </button>
         </div>

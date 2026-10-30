@@ -12,6 +12,8 @@ from voice_code.tools.file_read import read
 from voice_code.tools.file_write import write
 from voice_code.tools.glob_search import glob
 from voice_code.tools.grep_search import grep
+from voice_code.tools.image_edit import image_edit
+from voice_code.tools.image_gen import image_gen
 from voice_code.tools.task_get import task_get
 from voice_code.tools.task_list import task_list
 from voice_code.tools.task_stop import task_stop
@@ -28,6 +30,8 @@ _ALL_TOOLS: list[BaseTool] = [
     edit,
     glob,
     grep,
+    image_edit,
+    image_gen,
     task_list,
     task_get,
     task_stop,

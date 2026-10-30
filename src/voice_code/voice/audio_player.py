@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import threading
@@ -42,7 +43,7 @@ class AudioPlayer:
             logger.warning("AudioPlayer: empty or invalid wav data")
             return
 
-        self._stop_current()
+        self.begin_stream()
         try:
             with wave.open(io.BytesIO(audio_bytes), "rb") as wf:
                 sample_rate = wf.getframerate()
@@ -84,8 +85,7 @@ class AudioPlayer:
         Args:
             stream: AsyncGenerator，yield (audio_chunk_1d_float32, sample_rate)
         """
-        self._stop_current()
-        self._stop_event.clear()
+        self.begin_stream()
 
         first = True
         output_stream: Any | None = None
@@ -115,7 +115,7 @@ class AudioPlayer:
                     chunk = np.ascontiguousarray(audio_chunk, dtype=np.float32)
                     if chunk.ndim == 1:
                         chunk = chunk.reshape(-1, 1)
-                    output_stream.write(chunk)
+                    await asyncio.to_thread(output_stream.write, chunk)
                     total_samples += len(chunk)
 
         except Exception:
@@ -123,27 +123,47 @@ class AudioPlayer:
             raise
         finally:
             if output_stream is not None:
-                output_stream.stop()
-                output_stream.close()
+                await asyncio.to_thread(self._close_output_stream, output_stream)
             with self._lock:
                 self._playing = False
             duration = total_samples / (sample_rate if not first else 48000)
             logger.info("AudioPlayer: stream done, played %.2fs", duration)
 
+    def begin_stream(self) -> None:
+        """Prepare a new playback generation after a previous stop."""
+        self._stop_current()
+        with self._lock:
+            previous_stream = self._stream
+            self._stream = None
+            self._playing = False
+            self._stop_event.clear()
+        if previous_stream is not None:
+            self._close_output_stream(previous_stream)
+
     def stop(self) -> None:
         """停止当前播放。"""
         self._stop_event.set()
         self._stop_current()
+        with self._lock:
+            stream = self._stream
+            self._stream = None
+            self._playing = False
+        if stream is not None:
+            self._close_output_stream(stream, abort=True)
 
     def is_playing(self) -> bool:
         """返回是否正在播放。"""
         with self._lock:
             return self._playing
 
-    async def play_chunk(self, audio_chunk: np.ndarray, sample_rate: int) -> None:
-        """向当前流写入一个音频 chunk（阻塞直到写入完成）。"""
+    def stop_requested(self) -> bool:
+        """Return whether the current playback generation was stopped."""
+        return self._stop_event.is_set()
+
+    async def play_chunk(self, audio_chunk: np.ndarray, sample_rate: int) -> bool:
+        """向当前流写入一个音频 chunk，不阻塞事件循环。"""
         if self._stop_event.is_set():
-            return
+            return False
         chunk = np.ascontiguousarray(audio_chunk, dtype=np.float32)
         if chunk.ndim == 1:
             chunk = chunk.reshape(-1, 1)
@@ -155,13 +175,21 @@ class AudioPlayer:
             self._stream.start()
         with self._lock:
             self._playing = True
-        self._stream.write(chunk)
+            stream = self._stream
+        try:
+            await asyncio.to_thread(stream.write, chunk)
+        except Exception:
+            if self._stop_event.is_set():
+                return False
+            raise
+        return not self._stop_event.is_set()
 
     async def close_stream(self) -> None:
-        if self._stream is not None:
-            self._stream.stop()
-            self._stream.close()
+        with self._lock:
+            stream = self._stream
             self._stream = None
+        if stream is not None:
+            await asyncio.to_thread(self._close_output_stream, stream)
         with self._lock:
             self._playing = False
 
@@ -171,3 +199,19 @@ class AudioPlayer:
             sd.stop()
         except Exception:
             pass
+
+    @staticmethod
+    def _close_output_stream(stream: Any, *, abort: bool = False) -> None:
+        try:
+            try:
+                if abort and hasattr(stream, "abort"):
+                    stream.abort()
+                else:
+                    stream.stop()
+            except Exception:
+                logger.debug("AudioPlayer: output stream stop failed", exc_info=True)
+        finally:
+            try:
+                stream.close()
+            except Exception:
+                logger.debug("AudioPlayer: output stream close failed", exc_info=True)

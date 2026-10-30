@@ -109,8 +109,9 @@ def build_session_runtime_state(
     )
 
 
-def save_session_state(state: SessionRuntimeState) -> None:
-    path = get_session_state_path(state.session_id)
+def save_session_state(state: SessionRuntimeState, *, path: Path | None = None) -> None:
+    if path is None:
+        path = get_session_state_path(state.session_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     best_effort_private_permissions(path.parent, directory=True)
     payload = json.dumps(state.to_dict(), ensure_ascii=False, indent=2)

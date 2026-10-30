@@ -229,6 +229,51 @@ def test_dont_ask_denies_without_invoking_approver():
     assert approver.requests == []
 
 
+def test_full_auto_approves_ask_without_invoking_approver():
+    approver = FixedApprover(behavior=PermissionBehavior.DENY)
+    ctx = PermissionContext(mode="fullAuto", approver=approver)
+
+    decision = can_use_tool(
+        tool_name="image_gen",
+        tool_input={"prompt": "a cat"},
+        tool_metadata={"is_readonly": False},
+        context=ctx,
+    )
+
+    assert decision.behavior == PermissionBehavior.ALLOW
+    assert approver.requests == []
+
+
+def test_full_auto_still_honors_deny_rules():
+    approver = FixedApprover(behavior=PermissionBehavior.ALLOW)
+    ctx = PermissionContext(
+        mode="fullAuto",
+        approver=approver,
+        runtime_rules=[
+            PermissionRule(
+                name="no_push",
+                behavior=PermissionBehavior.DENY,
+                source=PermissionRuleSource.RUNTIME,
+                reason_type=PermissionReasonType.RULE_MATCH,
+                reason_message="push is blocked",
+                risk_category="high",
+                tool_names=("bash",),
+                command_patterns=("*git push*",),
+            )
+        ],
+    )
+
+    decision = can_use_tool(
+        tool_name="bash",
+        tool_input={"command": "git push origin main"},
+        tool_metadata={"is_readonly": False},
+        context=ctx,
+    )
+
+    assert decision.behavior == PermissionBehavior.DENY
+    assert approver.requests == []
+
+
 def test_deny_rule_precedence_beats_allow_rule():
     ctx = PermissionContext(
         workspace_rules=[

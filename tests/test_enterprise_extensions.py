@@ -310,3 +310,34 @@ for line in sys.stdin:
 
     assert [item.name for item in tools] == ["mcp__fake__echo"]
     assert await tools[0].ainvoke({"value": "hello"}) == "hello"
+
+
+@pytest.mark.asyncio
+async def test_build_workspace_prompt_excludes_named_skills(tmp_path: Path) -> None:
+    from voice_code.runtime import build_workspace_prompt
+
+    skills_root = tmp_path / ".reasoning" / "skills"
+    (skills_root / "gateway-image").mkdir(parents=True)
+    (skills_root / "gateway-image" / "SKILL.md").write_text(
+        "run scripts/gen_image.py via bash", encoding="utf-8"
+    )
+    (skills_root / "notes").mkdir(parents=True)
+    (skills_root / "notes" / "SKILL.md").write_text("note taking tips", encoding="utf-8")
+
+    prompt = await build_workspace_prompt(
+        workspace=str(tmp_path),
+        tools=[],
+        model_name="test-model",
+        use_cache=False,
+        exclude_skills=frozenset({"gateway-image"}),
+    )
+    assert "gen_image.py" not in prompt
+    assert "note taking tips" in prompt
+
+    prompt_all = await build_workspace_prompt(
+        workspace=str(tmp_path),
+        tools=[],
+        model_name="test-model",
+        use_cache=False,
+    )
+    assert "gen_image.py" in prompt_all

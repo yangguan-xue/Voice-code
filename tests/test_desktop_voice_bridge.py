@@ -10,7 +10,7 @@ from langchain_core.messages import HumanMessage
 
 from voice_code.agent.types import AgentEvent, EventType
 from voice_code.desktop_voice.bridge import DesktopVoiceBridge
-from voice_code.desktop_voice.protocol import VoiceBridgeEvent
+from voice_code.desktop_voice.protocol import VoiceBridgeEvent, voice_state_event
 from voice_code.goals.workspace import GoalWorkspaceManager
 
 
@@ -199,6 +199,82 @@ async def test_desktop_voice_bridge_interrupts_active_turn() -> None:
     await task
 
     assert agent.interrupted is True
+
+
+@pytest.mark.asyncio
+async def test_desktop_voice_bridge_interrupts_the_active_parallel_agent(tmp_path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    _git(repo, "init")
+    _git(repo, "config", "user.name", "Voice Test")
+    _git(repo, "config", "user.email", "voice-test@localhost")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "initial")
+
+    parallel_agent: dict[str, BlockingAgentBridge] = {}
+    factory_ready = asyncio.Event()
+
+    class BlockingAgentBridge(_FakeAgentBridge):
+        def __init__(self) -> None:
+            super().__init__(result="并行完成。")
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def run_turn(self, text: str, **kwargs) -> str:
+            self.calls.append(text)
+            self.started.set()
+            await self.release.wait()
+            return self.result
+
+    async def create_parallel_agent(_workspace_path: str):
+        agent = BlockingAgentBridge()
+        parallel_agent["value"] = agent
+        factory_ready.set()
+        return agent
+
+    bridge = DesktopVoiceBridge(
+        session_id="voice-session",
+        agent_bridge=_FakeAgentBridge(),  # type: ignore[arg-type]
+        worktree_manager=GoalWorkspaceManager(repo),
+        parallel_agent_factory=create_parallel_agent,  # type: ignore[arg-type]
+    )
+    task = asyncio.create_task(
+        bridge.start_turn(
+            "并行改文件",
+            mode="parallelWorktree",
+            worktree_task_id="voice-interrupt",
+        )
+    )
+    await asyncio.wait_for(factory_ready.wait(), timeout=1)
+    await asyncio.wait_for(parallel_agent["value"].started.wait(), timeout=1)
+
+    interrupted = bridge.interrupt_turn()
+    parallel_agent["value"].release.set()
+    await task
+
+    assert interrupted is True
+    assert parallel_agent["value"].interrupted is True
+
+
+@pytest.mark.asyncio
+async def test_desktop_voice_bridge_broadcasts_to_all_emitters() -> None:
+    first: list[VoiceBridgeEvent] = []
+    second: list[VoiceBridgeEvent] = []
+    bridge = DesktopVoiceBridge(
+        session_id="voice-session",
+        agent_bridge=_FakeAgentBridge(),  # type: ignore[arg-type]
+    )
+    first_token = bridge.add_emit(first.append)
+    second_token = bridge.add_emit(second.append)
+
+    event = voice_state_event(session_id="voice-session", state="idle")
+    await bridge.emit_event(event)
+
+    assert first == [event]
+    assert second == [event]
+    bridge.remove_emit(first_token)
+    bridge.remove_emit(second_token)
 
 
 def _event_payloads(events: list[VoiceBridgeEvent]) -> list[dict[str, Any]]:

@@ -128,6 +128,36 @@ async def test_desktop_voice_server_bootstrap_and_tts_mute() -> None:
 
 
 @pytest.mark.asyncio
+async def test_desktop_voice_server_keeps_events_for_multiple_clients() -> None:
+    bridge = DesktopVoiceBridge(
+        session_id="voice-session",
+        agent_bridge=_FakeAgentBridge(),  # type: ignore[arg-type]
+    )
+    server = DesktopVoiceServer(bridge=bridge, token="test-token")
+
+    async with server.run(host="127.0.0.1", port=0) as running:
+        async with (
+            connect(running.url, proxy=None) as first,
+            connect(running.url, proxy=None) as second,
+        ):
+            await first.send(
+                json.dumps(
+                    {
+                        "id": "turn-1",
+                        "type": "request",
+                        "method": "voice.turn.start",
+                        "token": "test-token",
+                        "payload": {"text": "你好"},
+                    }
+                )
+            )
+
+            second_message = json.loads(await asyncio.wait_for(second.recv(), timeout=1))
+            assert second_message["type"] == "event"
+            assert second_message["event"] == "voice.user.final"
+
+
+@pytest.mark.asyncio
 async def test_desktop_voice_server_accepts_shared_context_messages() -> None:
     agent = _FakeAgentBridge()
     bridge = DesktopVoiceBridge(

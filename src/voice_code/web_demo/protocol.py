@@ -16,12 +16,12 @@ WebDemoEventName = Literal[
     "agent.turn.finish",
     "permission.request",
     "session.updated",
-    "session.expired",
+    "runtime.recycled",
     "sandbox.diff.updated",
     "sandbox.reset",
 ]
 WebDemoRequestMethod = Literal[
-    "demo.session.create",
+    "tenant.session.attach",
     "turn.start",
     "turn.interrupt",
     "permission.resolve",
@@ -47,7 +47,11 @@ class WebDemoEvent(BaseModel):
 
 
 class WebDemoRequest(BaseModel):
-    """Request sent by the web demo frontend over WebSocket."""
+    """Request sent by the web demo frontend over WebSocket.
+
+    session_token 字段在租户模型下承载 tenantToken：
+    tenant.session.attach 用它登录并绑定当前会话，其余 method 用它定位会话。
+    """
 
     model_config = ConfigDict(populate_by_name=True)
 
