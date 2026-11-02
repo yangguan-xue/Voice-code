@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Create the desktop app-owned runtime resource layout.
 
-This script creates the deterministic files that Tauri packaging can include. By
-default it does not download Python or install project dependencies; passing
-`--install` explicitly prepares an app-owned managed Python runtime for release
-packaging.
+This script intentionally does not download Python or install project dependencies by
+default. With `--install`, it bundles a standalone Python distribution and project
+dependencies so the packaged runtime does not depend on the build machine's paths.
 """
 
 from __future__ import annotations
@@ -35,43 +34,38 @@ README_NAME = "README.txt"
 POSIX_LAUNCHER = """#!/usr/bin/env sh
 set -eu
 RUNTIME_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-PYTHON=""
-for candidate in \
-  "$RUNTIME_DIR"/python/*/bin/python \
-  "$RUNTIME_DIR"/python/*/bin/python3 \
-  "$RUNTIME_DIR"/.venv/bin/python; do
-  if [ -x "$candidate" ]; then
-    PYTHON="$candidate"
-    break
-  fi
-done
-if [ -z "$PYTHON" ]; then
-  echo "Desktop runtime Python not found under $RUNTIME_DIR/python or $RUNTIME_DIR/.venv" >&2
-  echo "Create the runtime environment before packaging this launcher." >&2
+PYTHON="$RUNTIME_DIR/.python/bin/python"
+SITE_PACKAGES="$RUNTIME_DIR/site-packages"
+if [ ! -x "$PYTHON" ]; then
+  echo "Desktop runtime Python not found: $PYTHON" >&2
+  echo "Install the bundled runtime before packaging this launcher." >&2
   exit 127
 fi
+if [ ! -d "$SITE_PACKAGES" ]; then
+  echo "Desktop runtime packages not found: $SITE_PACKAGES" >&2
+  exit 127
+fi
+export PYTHONHOME="$RUNTIME_DIR/.python"
+export PYTHONPATH="$SITE_PACKAGES${PYTHONPATH:+:$PYTHONPATH}"
 exec "$PYTHON" -m voice_code.desktop_runtime.launcher "$@"
 """
 
 WINDOWS_LAUNCHER = """@echo off
 setlocal
 set "RUNTIME_DIR=%~dp0"
-set "PYTHON="
-for /d %%D in ("%RUNTIME_DIR%python\\*") do (
-  if exist "%%~fD\\python.exe" (
-    set "PYTHON=%%~fD\\python.exe"
-    goto :found_python
-  )
-)
-if exist "%RUNTIME_DIR%.venv\\Scripts\\python.exe" (
-  set "PYTHON=%RUNTIME_DIR%.venv\\Scripts\\python.exe"
-)
-:found_python
-if not defined PYTHON (
-  echo Desktop runtime Python not found under %RUNTIME_DIR%python or %RUNTIME_DIR%.venv 1>&2
-  echo Create the runtime environment before packaging this launcher. 1>&2
+set "PYTHON=%RUNTIME_DIR%.python\\python.exe"
+set "SITE_PACKAGES=%RUNTIME_DIR%site-packages"
+if not exist "%PYTHON%" (
+  echo Desktop runtime Python not found: %PYTHON% 1>&2
+  echo Install the bundled runtime before packaging this launcher. 1>&2
   exit /b 127
 )
+if not exist "%SITE_PACKAGES%" (
+  echo Desktop runtime packages not found: %SITE_PACKAGES% 1>&2
+  exit /b 127
+)
+set "PYTHONHOME=%RUNTIME_DIR%.python"
+set "PYTHONPATH=%SITE_PACKAGES%;%PYTHONPATH%"
 "%PYTHON%" -m voice_code.desktop_runtime.launcher %*
 exit /b %ERRORLEVEL%
 """
@@ -80,9 +74,9 @@ README = """Voice Code desktop runtime layout
 
 This directory is intended to be bundled as the Tauri app resource `runtime/`.
 
-The default layout generator does not download Python, uv, Rust, or project
-dependencies. Release packaging may explicitly prepare an app-owned managed
-Python under `python/` with the `voice-code` package installed.
+The layout generator does not download Python, uv, Rust, or project dependencies
+unless `--install` is explicitly passed. An installed layout contains a standalone
+Python distribution in `.python/` and dependencies in `site-packages/`.
 
 Expected launcher contract:
   voice-code-agent reasoning-desktop-bridge --port 0 --workspace <path>
@@ -102,6 +96,7 @@ class RuntimeLayoutResult:
 class RuntimeInstallResult:
     output: Path
     python_root: Path
+    site_packages: Path
     python: Path
     commands: tuple[tuple[str, ...], ...]
 
@@ -123,18 +118,17 @@ def runtime_manifest(
         status = "layout-only"
 
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "runtimeMode": "app-owned",
         "status": status,
         "installComplete": install_complete,
         "createdAt": created_at or datetime.now(UTC).isoformat(),
         "createdBy": "tools/build_desktop_runtime.py",
         "python": {
-            "posix": "python/*/bin/python",
-            "windows": "python\\*\\python.exe",
-            "fallbackPosix": ".venv/bin/python",
-            "fallbackWindows": ".venv\\Scripts\\python.exe",
+            "posix": ".python/bin/python",
+            "windows": ".python\\python.exe",
         },
+        "sitePackages": "site-packages",
         "launchers": {
             "posix": POSIX_LAUNCHER_NAME if include_launchers else None,
             "windows": WINDOWS_LAUNCHER_NAME if include_launchers else None,
@@ -189,26 +183,18 @@ def write_runtime_layout(
     )
 
 
-def runtime_python_root(output: Path) -> Path:
-    return output / "python"
-
-
-def find_runtime_python(output: Path) -> Path | None:
-    if os.name == "nt":
-        candidates = sorted(runtime_python_root(output).glob("*/python.exe"))
-    else:
-        candidates = sorted(runtime_python_root(output).glob("*/bin/python"))
-        candidates.extend(sorted(runtime_python_root(output).glob("*/bin/python3")))
-    return candidates[0] if candidates else None
-
-
 def runtime_python_path(output: Path) -> Path:
-    runtime_python = find_runtime_python(output)
-    if runtime_python is None:
-        raise RuntimeError(
-            f"Managed desktop runtime Python was not found under {runtime_python_root(output)}."
-        )
-    return runtime_python
+    if os.name == "nt":
+        return output / ".python" / "python.exe"
+    return output / ".python" / "bin" / "python"
+
+
+def runtime_python_root(output: Path) -> Path:
+    return output / ".python"
+
+
+def runtime_site_packages_path(output: Path) -> Path:
+    return output / "site-packages"
 
 
 def resolve_uv(uv: str | None) -> str:
@@ -223,7 +209,43 @@ def resolve_uv(uv: str | None) -> str:
 
 
 def run_subprocess(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(list(command), check=True, text=True)
+    return subprocess.run(list(command), check=True, text=True, capture_output=True)
+
+
+def resolve_runtime_python_source(uv_path: str, python: str) -> Path:
+    requested_path = Path(python).expanduser()
+    if requested_path.is_file():
+        return requested_path.resolve()
+    result = run_subprocess(
+        (uv_path, "python", "find", "--no-project", "--resolve-links", python)
+    )
+    source = Path(result.stdout.strip())
+    if not source.is_file():
+        raise RuntimeError(f"uv returned an invalid Python path: {source}")
+    return source.resolve()
+
+
+def bundle_python_distribution(source_python: Path, target_root: Path) -> None:
+    source_root = (
+        source_python.parent.parent
+        if source_python.parent.name == "bin"
+        else source_python.parent
+    )
+    if not source_root.is_dir():
+        raise RuntimeError(f"Python distribution directory was not found: {source_root}")
+    shutil.copytree(source_root, target_root, symlinks=True, dirs_exist_ok=True)
+
+
+def remove_generated_script_wrappers(site_packages: Path) -> None:
+    for directory_name in ("bin", "Scripts"):
+        directory = site_packages / directory_name
+        if directory.is_dir():
+            shutil.rmtree(directory)
+
+
+def remove_build_location_metadata(site_packages: Path) -> None:
+    for direct_url in site_packages.glob("*.dist-info/direct_url.json"):
+        direct_url.unlink()
 
 
 def install_runtime_environment(
@@ -233,48 +255,43 @@ def install_runtime_environment(
     uv: str | None,
     python: str,
     runner: CommandRunner = run_subprocess,
+    python_source: Path | None = None,
 ) -> RuntimeInstallResult:
     output.mkdir(parents=True, exist_ok=True)
     uv_path = resolve_uv(uv)
+    runtime_python = runtime_python_path(output)
     python_root = runtime_python_root(output)
-    runtime_python = find_runtime_python(output)
+    site_packages = runtime_site_packages_path(output)
 
     commands: list[tuple[str, ...]] = []
-    if runtime_python is None:
-        command = (
-            uv_path,
-            "python",
-            "install",
-            python,
-            "--install-dir",
-            str(python_root),
-            "--no-bin",
-            "--no-registry",
-        )
-        commands.append(command)
-        runner(command)
-        runtime_python = find_runtime_python(output)
-        if runtime_python is None:
-            raise RuntimeError(
-                f"uv completed but no managed Python was found under {python_root}."
-            )
-
-    command = (
+    if not runtime_python.exists():
+        source = python_source or resolve_runtime_python_source(uv_path, python)
+        bundle_python_distribution(source, python_root)
+    site_packages.mkdir(parents=True, exist_ok=True)
+    install_command = [
         uv_path,
         "pip",
         "install",
-        "--system",
-        "--break-system-packages",
-        "--python",
-        str(runtime_python),
-        str(project_root),
-    )
-    commands.append(command)
-    runner(command)
+        "--target",
+        str(site_packages),
+        "--no-editable",
+    ]
+    if not Path(python).is_file():
+        install_command.extend(["--python-version", python])
+    install_command.append(str(project_root))
+    commands.append(tuple(install_command))
+    for command in commands:
+        runner(command)
+    remove_generated_script_wrappers(site_packages)
+    remove_build_location_metadata(site_packages)
+    legacy_venv = output / ".venv"
+    if legacy_venv.is_dir():
+        shutil.rmtree(legacy_venv)
 
     return RuntimeInstallResult(
         output=output,
         python_root=python_root,
+        site_packages=site_packages,
         python=runtime_python,
         commands=tuple(commands),
     )
@@ -295,7 +312,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--with-launchers",
         action="store_true",
         help=(
-            "Also create script launchers that expect an already-installed runtime. "
+            "Also create script launchers that expect an already-installed .python "
+            "and site-packages layout. "
             "This still does not download or install dependencies."
         ),
     )
@@ -303,7 +321,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--install",
         action="store_true",
         help=(
-            "Explicitly create a managed Python runtime with uv and install this project. "
+            "Explicitly bundle Python with uv and install this project into "
+            "site-packages. "
             "This may download Python packages via uv; it is never enabled by default."
         ),
     )
@@ -320,12 +339,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--python",
         default="3.12",
-        help="Python version passed to `uv python install`.",
+        help="Python version or executable to bundle.",
     )
     return parser.parse_args(argv)
 
 
-def run(argv: list[str] | None = None, *, runner: CommandRunner = run_subprocess) -> int:
+def run(
+    argv: list[str] | None = None,
+    *,
+    runner: CommandRunner = run_subprocess,
+    python_source: Path | None = None,
+) -> int:
     args = parse_args(argv)
     include_launchers = args.with_launchers or args.install
     install_result: RuntimeInstallResult | None = None
@@ -337,6 +361,7 @@ def run(argv: list[str] | None = None, *, runner: CommandRunner = run_subprocess
             uv=args.uv,
             python=args.python,
             runner=runner,
+            python_source=python_source,
         )
 
     result = write_runtime_layout(
@@ -347,14 +372,15 @@ def run(argv: list[str] | None = None, *, runner: CommandRunner = run_subprocess
     print(f"Wrote desktop runtime layout: {result.output}")
     print(f"Manifest: {result.manifest}")
     if install_result is not None:
-        print(f"Installed runtime environment: {install_result.python_root}")
+        print(f"Bundled Python distribution: {install_result.python_root}")
+        print(f"Installed packages: {install_result.site_packages}")
         print(f"Runtime Python: {install_result.python}")
     if result.launchers:
         print("Launchers:")
         for launcher in result.launchers:
             print(f"  {launcher}")
     else:
-        print("Launchers: skipped; pass --with-launchers after the runtime exists.")
+        print("Launchers: skipped; pass --with-launchers after the bundled runtime exists.")
     return 0
 
 

@@ -25,9 +25,11 @@ from voice_code.runtime import (
     build_workspace_prompt,
     resolve_fallback_profile,
 )
+from voice_code.security import workspace_boundary
 from voice_code.session import get_session_path, make_session_id
 from voice_code.session.resume import resume_runtime_session
 from voice_code.session.transcript import TranscriptWriter
+from voice_code.subagents.service import get_or_create_service
 
 
 @dataclass(slots=True)
@@ -219,6 +221,7 @@ def _messages_to_conversation(
                 "finishReason": "completed",
                 "tools": [],
                 "errorText": "",
+                "statusNotices": [],
             }
             turns.append(current)
             continue
@@ -315,6 +318,7 @@ def make_desktop_agent_runner(
     runtime: RuntimeBootstrap,
     *,
     permission_context: PermissionContext,
+    service_loop: asyncio.AbstractEventLoop | None = None,
 ) -> AgentTurnRunner:
     """Create the desktop runner around the shared agent loop."""
 
@@ -328,24 +332,33 @@ def make_desktop_agent_runner(
         if permission_mode:
             permission_context.mode = permission_mode
         try:
-            async for event in agent_loop(
-                text,
-                runtime.tools,
-                runtime.prompt,
-                runtime.model,
-                permission_context=permission_context,
-                abort_signal=abort_signal,
-                resume_messages=_refresh_resumed_system_prompt(
-                    runtime.resume_messages,
+            # 桌面端每轮 turn 跑在 worker 线程的临时 loop 里，turn 结束即销毁。
+            # 子 agent 服务必须绑定到长生命周期的桥接 loop 上，
+            # 否则后台任务会随 worker loop 关闭而被取消，主 agent 永远收不到通知。
+            if service_loop is not None:
+                get_or_create_service(runtime.session_id, event_loop=service_loop)
+            # 桌面端在独立 worker 线程中执行 turn，ContextVar 不会跨线程继承，
+            # 必须在 runner 上下文内重新设置 workspace 边界，
+            # 否则工具的相对路径会退化为进程 cwd 且完全失去目录约束。
+            with workspace_boundary(getattr(runtime, "cwd", ".")):
+                async for event in agent_loop(
+                    text,
+                    runtime.tools,
                     runtime.prompt,
-                ),
-                transcript_writer=runtime.transcript_writer,
-                fallback_model=runtime.fallback_model,
-                runtime_session_id=runtime.session_id,
-                memory_service=runtime.memory_service,
-                memory_project_key=runtime.memory_project_key,
-            ):
-                yield event
+                    runtime.model,
+                    permission_context=permission_context,
+                    abort_signal=abort_signal,
+                    resume_messages=_refresh_resumed_system_prompt(
+                        runtime.resume_messages,
+                        runtime.prompt,
+                    ),
+                    transcript_writer=runtime.transcript_writer,
+                    fallback_model=runtime.fallback_model,
+                    runtime_session_id=runtime.session_id,
+                    memory_service=runtime.memory_service,
+                    memory_project_key=runtime.memory_project_key,
+                ):
+                    yield event
         finally:
             runtime.resume_messages = runtime.transcript_writer.read_all_messages()
             permission_context.mode = previous_mode
@@ -421,7 +434,11 @@ async def create_desktop_bridge_runtime(
         workspace_root=runtime.cwd,
         workspace_rules=load_workspace_rules(runtime.cwd),
     )
-    runner = make_desktop_agent_runner(runtime, permission_context=permission_context)
+    runner = make_desktop_agent_runner(
+        runtime,
+        permission_context=permission_context,
+        service_loop=loop,
+    )
     bridge = DesktopAgentBridge(
         session_id=runtime.session_id,
         runner=runner,
