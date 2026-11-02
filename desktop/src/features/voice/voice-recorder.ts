@@ -12,15 +12,21 @@ export class BrowserVoiceRecorder {
   private stream: MediaStream | null = null;
   private chunks: Float32Array[] = [];
   private inputSampleRate = 48000;
+  private operationId = 0;
 
   async start(): Promise<void> {
     if (!navigator.mediaDevices?.getUserMedia) {
       throw new Error("当前环境不能访问麦克风。");
     }
 
+    const operationId = ++this.operationId;
+    this.disconnectNodes();
     this.stopTracks();
+    const previousAudioContext = this.audioContext;
+    this.audioContext = null;
+    void previousAudioContext?.close();
     this.chunks = [];
-    this.stream = await navigator.mediaDevices.getUserMedia({
+    const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
         echoCancellation: true,
@@ -29,8 +35,15 @@ export class BrowserVoiceRecorder {
       }
     });
 
+    if (operationId !== this.operationId) {
+      stream.getTracks().forEach((track) => track.stop());
+      return;
+    }
+    this.stream = stream;
+
     const AudioContextImpl = window.AudioContext ?? windowWithWebkit().webkitAudioContext;
     if (!AudioContextImpl) {
+      this.stopTracks();
       throw new Error("当前环境不支持 Web Audio。");
     }
 
@@ -38,18 +51,19 @@ export class BrowserVoiceRecorder {
     this.inputSampleRate = this.audioContext.sampleRate;
     this.source = this.audioContext.createMediaStreamSource(this.stream);
     this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
-    this.sink = this.audioContext.createGain();
-    this.sink.gain.value = 0;
     this.processor.onaudioprocess = (event) => {
       const channel = event.inputBuffer.getChannelData(0);
       this.chunks.push(new Float32Array(channel));
     };
     this.source.connect(this.processor);
+        this.sink = this.audioContext.createGain();
+    this.sink.gain.value = 0;
     this.processor.connect(this.sink);
     this.sink.connect(this.audioContext.destination);
   }
 
   async stop(): Promise<string> {
+    this.operationId += 1;
     this.disconnectNodes();
     const audio = concatenateFloat32(this.chunks);
     this.chunks = [];
@@ -69,6 +83,7 @@ export class BrowserVoiceRecorder {
   }
 
   cancel(): void {
+    this.operationId += 1;
     this.disconnectNodes();
     this.chunks = [];
     this.stopTracks();

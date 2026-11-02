@@ -214,25 +214,42 @@ describe("App", () => {
     });
   });
 
-  it("saves desktop voice settings from the settings sheet", async () => {
+  it("saves remote and Step Fun voice backend settings", async () => {
     render(<App />);
     await screen.findByRole("region", { name: "voice-code 任务" });
 
     fireEvent.click(screen.getByRole("button", { name: "设置" }));
-    fireEvent.change(screen.getByRole("combobox", { name: "语音后端" }), {
-      target: { value: "stepfun" }
+    fireEvent.click(screen.getByRole("tab", { name: "语音" }));
+
+    const provider = screen.getByRole("combobox", { name: "语音后端" });
+    expect(provider).toHaveValue("remote");
+
+    fireEvent.change(screen.getByRole("textbox", { name: "STT 地址" }), {
+      target: { value: "https://stt.example.com" }
     });
-    fireEvent.change(screen.getByLabelText("StepFun Key"), {
-      target: { value: "stepfun-secret" }
+    fireEvent.change(screen.getByRole("textbox", { name: "TTS 地址" }), {
+      target: { value: "https://tts.example.com/v1" }
     });
-    fireEvent.change(screen.getByRole("textbox", { name: "StepFun 音色" }), {
-      target: { value: "longxiaochun" }
+    fireEvent.change(screen.getByLabelText("语音 API Key"), {
+      target: { value: "remote-secret" }
     });
-    fireEvent.click(screen.getByRole("checkbox", { name: "启用语音播报" }));
     fireEvent.click(screen.getByRole("button", { name: "保存语音配置" }));
 
     expect(await screen.findByRole("status", { name: "语音配置状态" })).toHaveTextContent(
-      "StepFun 语音已保存并启用。"
+      "已启用：自建语音服务"
+    );
+
+    fireEvent.change(provider, { target: { value: "stepfun" } });
+    fireEvent.change(screen.getByLabelText("Step Fun API Key"), {
+      target: { value: "stepfun-secret" }
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: "声音" }), {
+      target: { value: "custom-voice" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存语音配置" }));
+
+    expect(await screen.findByRole("status", { name: "语音配置状态" })).toHaveTextContent(
+      "已启用：Step Fun"
     );
   });
 

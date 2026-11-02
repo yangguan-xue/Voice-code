@@ -25,8 +25,9 @@ class TtsClient:
     返回 WAV bytes（非流式）或流式 PCM chunk。
     """
 
-    def __init__(self, base_url: str | None = None) -> None:
+    def __init__(self, base_url: str | None = None, api_key: str | None = None) -> None:
         self._base_url = (base_url or os.getenv("TTS_BASE_URL") or DEFAULT_TTS_URL).rstrip("/")
+        self._api_key = (api_key or os.getenv("TTS_API_KEY") or "").strip()
         self._timeout = httpx.Timeout(TTS_TIMEOUT_SECONDS)
         logger.info("TtsClient initialized: %s", self._base_url)
 
@@ -46,7 +47,7 @@ class TtsClient:
                 response = await client.post(
                     self._base_url,
                     json=body,
-                    headers={"Content-Type": "application/json"},
+                    headers=self._request_headers(),
                 )
                 response.raise_for_status()
         except httpx.TimeoutException:
@@ -102,7 +103,7 @@ class TtsClient:
                 "POST",
                 self._base_url,
                 json=body,
-                headers={"Content-Type": "application/json"},
+                headers=self._request_headers(),
             ) as response:
                 response.raise_for_status()
 
@@ -129,10 +130,19 @@ class TtsClient:
         """检查 TTS 服务是否可用。"""
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.get(f"{self._base_url.rsplit('/', 1)[0]}/health")
+                resp = await client.get(
+                    f"{self._base_url.rsplit('/', 1)[0]}/health",
+                    headers=self._request_headers(),
+                )
                 return resp.status_code == 200
         except Exception:
             return False
+
+    def _request_headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        return headers
 
 
 class VoxcTtsClient(TtsClient):

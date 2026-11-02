@@ -9,8 +9,8 @@ import type {
   SessionResumeResult,
   TurnStartOptions,
   TurnStartResult,
-  VoiceSettings,
-  VoiceSettingsInput
+  VoiceConfigInput,
+  VoiceConfigSummary
 } from "./protocol";
 import { WebSocketBridgeClient } from "./websocket-client";
 
@@ -46,9 +46,10 @@ export class TauriBridgeClient implements DesktopBridgeClient {
   }
 
   async bootstrap(): Promise<BootstrapResult> {
-    const [metadata, stored] = await Promise.all([
+    const [metadata, stored, voiceConfig] = await Promise.all([
       invoke<BootstrapResult>("desktop_metadata"),
-      invoke<StoredModelConfigList>("list_model_configs")
+      invoke<StoredModelConfigList>("list_model_configs"),
+      invoke<VoiceConfigSummary>("get_voice_config")
     ]);
     this.customConfigIds = new Set(stored.configs.map((config) => config.id));
     return {
@@ -57,7 +58,8 @@ export class TauriBridgeClient implements DesktopBridgeClient {
       modelProfiles: [
         ...metadata.modelProfiles.map((profile) => ({ ...profile, source: "builtin" as const })),
         ...stored.configs
-      ]
+      ],
+      voiceConfig
     };
   }
 
@@ -107,12 +109,8 @@ export class TauriBridgeClient implements DesktopBridgeClient {
     return deleted;
   }
 
-  async loadVoiceSettings(): Promise<VoiceSettings> {
-    return invoke<VoiceSettings>("load_voice_settings");
-  }
-
-  async saveVoiceSettings(input: VoiceSettingsInput): Promise<VoiceSettings> {
-    return invoke<VoiceSettings>("save_voice_settings", { input });
+  async saveVoiceConfig(input: VoiceConfigInput): Promise<VoiceConfigSummary> {
+    return invoke<VoiceConfigSummary>("save_voice_config", { input });
   }
 
   async startTurn(text: string, options?: TurnStartOptions): Promise<TurnStartResult> {

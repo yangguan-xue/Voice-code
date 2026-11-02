@@ -25,12 +25,12 @@ import { createDesktopBridgeClient } from "../lib/bridge/client-factory";
 import {
   readString,
   type BridgeEvent,
+  type VoiceConfigInput,
+  type VoiceConfigSummary,
   type ModelConfigInput,
   type ModelProfileSummary,
   type PermissionRememberScope,
-  type PermissionResolveBehavior,
-  type VoiceSettings,
-  type VoiceSettingsInput
+  type PermissionResolveBehavior
 } from "../lib/bridge/protocol";
 import { selectWorkspaceFolder } from "../lib/desktop/workspace-picker";
 import { openVoiceWindow } from "../lib/desktop/voice-window";
@@ -50,15 +50,7 @@ export function App() {
   const [branches, setBranches] = useState<string[]>([demoWorkspace.branch]);
   const [isGitDirty, setIsGitDirty] = useState(false);
   const [modelProfiles, setModelProfiles] = useState<ModelProfileSummary[]>([]);
-  const [voiceSettings, setVoiceSettings] = useState<VoiceSettings>({
-    provider: "custom",
-    sttUrl: "http://localhost:8765",
-    ttsUrl: "http://localhost:8775",
-    stepfunVoice: "cixingnansheng",
-    stepfunKey: "",
-    hasStepfunKey: false,
-    ttsEnabled: false
-  });
+  const [voiceConfig, setVoiceConfig] = useState<VoiceConfigSummary | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState(false);
   const [isDiagnosticsLoading, setIsDiagnosticsLoading] = useState(false);
@@ -145,8 +137,7 @@ export function App() {
     let isMounted = true;
     void bridgeClient
       .bootstrap()
-      .then(async (bootstrap) => {
-        const savedVoiceSettings = await bridgeClient.loadVoiceSettings();
+      .then((bootstrap) => {
         if (isMounted) {
           if (bootstrap.sessionGroups.length > 0) {
             setSessionGroups((current) => mergeBootstrapSessionGroups(current, bootstrap.sessionGroups));
@@ -154,6 +145,7 @@ export function App() {
           setBranches(bootstrap.branches);
           setIsGitDirty(bootstrap.isDirty);
           setModelProfiles(bootstrap.modelProfiles);
+          setVoiceConfig(bootstrap.voiceConfig);
           if (bootstrap.sessionId && activeSessionRef.current === "draft") {
             setActiveSessionId(bootstrap.sessionId);
             activeSessionRef.current = bootstrap.sessionId;
@@ -171,7 +163,6 @@ export function App() {
             branch: bootstrap.branch || current.branch,
             model: bootstrap.activeProfile || current.model
           }));
-          setVoiceSettings(savedVoiceSettings);
         }
       })
       .catch((error: unknown) => {
@@ -416,9 +407,9 @@ export function App() {
     return deleted;
   }
 
-  async function saveVoiceSettings(input: VoiceSettingsInput): Promise<VoiceSettings> {
-    const saved = await bridgeClient.saveVoiceSettings(input);
-    setVoiceSettings(saved);
+  async function saveVoiceConfig(input: VoiceConfigInput): Promise<VoiceConfigSummary> {
+    const saved = await bridgeClient.saveVoiceConfig(input);
+    setVoiceConfig(saved);
     return saved;
   }
 
@@ -522,7 +513,7 @@ export function App() {
       branches={branches}
       isGitDirty={isGitDirty}
       modelProfiles={modelProfiles}
-      voiceSettings={voiceSettings}
+      voiceConfig={voiceConfig}
       isSettingsOpen={isSettingsOpen}
       isDiagnosticsOpen={isDiagnosticsOpen}
       isDiagnosticsLoading={isDiagnosticsLoading}
@@ -540,7 +531,7 @@ export function App() {
       onDiagnosticsPathOpen={openDiagnosticsPath}
       onModelConfigSave={saveModelConfig}
       onModelConfigDelete={deleteModelConfig}
-      onVoiceSettingsSave={saveVoiceSettings}
+      onVoiceConfigSave={saveVoiceConfig}
       onSessionSelect={selectSession}
       onSessionArchive={archiveSession}
       onPromptChange={setPrompt}

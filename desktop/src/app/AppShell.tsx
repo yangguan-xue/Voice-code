@@ -11,8 +11,8 @@ import type {
   ModelConfigInput,
   PermissionRememberScope,
   PermissionResolveBehavior,
-  VoiceSettings,
-  VoiceSettingsInput
+  VoiceConfigInput,
+  VoiceConfigSummary
 } from "../lib/bridge/protocol";
 import type { VoiceLaunchMode } from "../features/voice/voice-launch-context";
 import type { SessionGroup, WorkspaceSummary } from "./fixtures";
@@ -39,7 +39,7 @@ type AppShellProps = {
   branches: string[];
   isGitDirty: boolean;
   modelProfiles: ModelProfileSummary[];
-  voiceSettings: VoiceSettings;
+  voiceConfig: VoiceConfigSummary | null;
   isSettingsOpen: boolean;
   isDiagnosticsOpen: boolean;
   isDiagnosticsLoading: boolean;
@@ -57,7 +57,7 @@ type AppShellProps = {
   onDiagnosticsPathOpen: (path: string) => Promise<boolean>;
   onModelConfigSave: (input: ModelConfigInput) => Promise<ModelProfileSummary>;
   onModelConfigDelete: (id: string) => Promise<boolean>;
-  onVoiceSettingsSave: (input: VoiceSettingsInput) => Promise<VoiceSettings>;
+  onVoiceConfigSave: (input: VoiceConfigInput) => Promise<VoiceConfigSummary>;
   onSessionSelect: (sessionId: string) => void;
   onSessionArchive: (sessionId: string) => void;
   onPromptChange: (value: string) => void;
@@ -87,7 +87,7 @@ export function AppShell({
   branches,
   isGitDirty,
   modelProfiles,
-  voiceSettings,
+  voiceConfig,
   isSettingsOpen,
   isDiagnosticsOpen,
   isDiagnosticsLoading,
@@ -105,7 +105,7 @@ export function AppShell({
   onDiagnosticsPathOpen,
   onModelConfigSave,
   onModelConfigDelete,
-  onVoiceSettingsSave,
+  onVoiceConfigSave,
   onSessionSelect,
   onSessionArchive,
   onPromptChange,
@@ -172,11 +172,11 @@ export function AppShell({
       {isSettingsOpen ? (
         <ModelSettings
           configs={modelProfiles.filter((profile) => profile.source === "custom")}
-          voiceSettings={voiceSettings}
+          voiceConfig={voiceConfig}
           onClose={onSettingsClose}
           onSave={onModelConfigSave}
           onDelete={onModelConfigDelete}
-          onVoiceSave={onVoiceSettingsSave}
+          onVoiceSave={onVoiceConfigSave}
         />
       ) : null}
       {isDiagnosticsOpen ? (

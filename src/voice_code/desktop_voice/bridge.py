@@ -186,7 +186,7 @@ class DesktopVoiceBridge:
                             text=final_text,
                         )
                     )
-                    await self._speak(final_text, turn_id=turn_id)
+                    await self._speak(final_text, turn_id=turn_id, agent_bridge=agent_bridge)
             except Exception:
                 finish_reason = "error"
                 logger.exception("Desktop voice turn failed")
@@ -241,8 +241,9 @@ class DesktopVoiceBridge:
         if self._active_turn_id is None:
             self._audio_player.stop()
             return False
-        active_agent = self._active_agent_bridge or self._agent_bridge
-        active_agent.interrupt()
+        agent_bridge = self._active_agent_bridge
+        if agent_bridge is not None:
+            agent_bridge.interrupt()
         self._audio_player.stop()
         return True
 
@@ -262,10 +263,10 @@ class DesktopVoiceBridge:
             )
         )
 
-    async def _speak(self, text: str, *, turn_id: int) -> None:
+    async def _speak(self, text: str, *, turn_id: int, agent_bridge: AgentBridge) -> None:
         if self._tts_muted or self._tts_client is None:
             return
-        spoken = await self._agent_bridge.summarize_for_speech(text)
+        spoken = await agent_bridge.summarize_for_speech(text)
         if not spoken:
             return
         await self._emit_event(

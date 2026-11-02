@@ -5,7 +5,10 @@ use std::{
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStderr, Command, Stdio},
-    sync::{mpsc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc, Mutex,
+    },
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -25,6 +28,8 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 const MODEL_KEYRING_SERVICE: &str = "voice-code-desktop-model";
 const MODEL_CONFIG_FILE: &str = "model-configs.json";
 const VOICE_KEYRING_SERVICE: &str = "voice-code-desktop-voice";
+const VOICE_KEYRING_ACCOUNT_REMOTE: &str = "remote";
+const VOICE_KEYRING_ACCOUNT_STEPFUN: &str = "stepfun";
 const VOICE_CONFIG_FILE: &str = "voice-config.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,7 +54,6 @@ struct DesktopVoiceBridgeConfig {
     tts_muted: bool,
 }
 
-#[derive(Default)]
 struct BridgeProcessState {
     child: Mutex<Option<Child>>,
     config: Mutex<Option<DesktopBridgeConfig>>,
@@ -57,6 +61,25 @@ struct BridgeProcessState {
     voice_config: Mutex<Option<DesktopVoiceBridgeConfig>>,
     selected_workspace: Mutex<Option<PathBuf>>,
     model_configs: Mutex<()>,
+    voice_settings: Mutex<()>,
+    voice_start: tauri::async_runtime::Mutex<()>,
+    voice_generation: AtomicU64,
+}
+
+impl Default for BridgeProcessState {
+    fn default() -> Self {
+        Self {
+            child: Mutex::new(None),
+            config: Mutex::new(None),
+            voice_child: Mutex::new(None),
+            voice_config: Mutex::new(None),
+            selected_workspace: Mutex::new(None),
+            model_configs: Mutex::new(()),
+            voice_settings: Mutex::new(()),
+            voice_start: tauri::async_runtime::Mutex::new(()),
+            voice_generation: AtomicU64::new(0),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,45 +142,59 @@ struct ResolvedModelConfig {
 #[serde(rename_all = "camelCase")]
 struct StoredVoiceConfig {
     provider: String,
-    stepfun_voice: String,
     stt_url: String,
     tts_url: String,
-    tts_enabled: bool,
+    stepfun_voice: String,
+    #[serde(default)]
+    stepfun_base_url: String,
 }
 
 impl Default for StoredVoiceConfig {
     fn default() -> Self {
         Self {
-            provider: "custom".to_string(),
-            stepfun_voice: "cixingnansheng".to_string(),
+            provider: "remote".to_string(),
             stt_url: "http://localhost:8765".to_string(),
             tts_url: "http://localhost:8775".to_string(),
-            tts_enabled: false,
+            stepfun_voice: "cixingnansheng".to_string(),
+            stepfun_base_url: String::new(),
         }
     }
 }
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct VoiceSettingsInput {
+struct VoiceConfigInput {
     provider: String,
     stt_url: String,
     tts_url: String,
+    #[serde(default)]
+    api_key: String,
+    #[serde(default)]
+    stepfun_api_key: String,
     stepfun_voice: String,
-    stepfun_key: String,
-    tts_enabled: bool,
+    #[serde(default)]
+    stepfun_base_url: String,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct VoiceSettings {
+struct VoiceConfigSummary {
     provider: String,
     stt_url: String,
     tts_url: String,
     stepfun_voice: String,
-    stepfun_key: String,
-    has_stepfun_key: bool,
-    tts_enabled: bool,
+    stepfun_base_url: String,
+    has_api_key: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedVoiceConfig {
+    provider: String,
+    stt_url: String,
+    tts_url: String,
+    api_key: Option<String>,
+    stepfun_voice: String,
+    stepfun_base_url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -204,19 +241,40 @@ impl BridgeProcessState {
     }
 
     fn stop_voice_bridge(&self) {
-        let Ok(mut child) = self.voice_child.lock() else {
-            return;
-        };
-        let Some(mut process) = child.take() else {
-            return;
-        };
-        platform::terminate_child_processes(process.id());
-        let _ = process.kill();
-        let _ = process.wait();
+        self.voice_generation.fetch_add(1, Ordering::SeqCst);
+        let process = self
+            .voice_child
+            .lock()
+            .ok()
+            .and_then(|mut child| child.take());
+        if let Some(process) = process {
+            terminate_child_process(process);
+        }
         if let Ok(mut config) = self.voice_config.lock() {
             *config = None;
         }
     }
+
+    fn current_voice_config(&self) -> Option<DesktopVoiceBridgeConfig> {
+        let mut child = self.voice_child.lock().ok()?;
+        let Some(process) = child.as_mut() else {
+            return None;
+        };
+        if matches!(process.try_wait(), Ok(Some(_))) {
+            child.take();
+            if let Ok(mut config) = self.voice_config.lock() {
+                *config = None;
+            }
+            return None;
+        }
+        self.voice_config.lock().ok()?.clone()
+    }
+}
+
+fn terminate_child_process(mut process: Child) {
+    platform::terminate_child_processes(process.id());
+    let _ = process.kill();
+    let _ = process.wait();
 }
 
 #[tauri::command]
@@ -346,6 +404,19 @@ fn list_model_configs(
 }
 
 #[tauri::command]
+fn get_voice_config(
+    app: AppHandle,
+    state: tauri::State<'_, BridgeProcessState>,
+) -> Result<VoiceConfigSummary, String> {
+    let _guard = state
+        .voice_settings
+        .lock()
+        .map_err(|_| "voice config lock is poisoned".to_string())?;
+    let config = read_voice_config_store(&app)?;
+    Ok(voice_config_summary(&config))
+}
+
+#[tauri::command]
 fn desktop_diagnostics(app: AppHandle) -> DesktopDiagnostics {
     let app_log_dir = app.path().app_log_dir().ok();
     let runtime = resolve_desktop_runtime(&app).ok();
@@ -464,6 +535,55 @@ fn delete_model_config(
 }
 
 #[tauri::command]
+fn save_voice_config(
+    app: AppHandle,
+    state: tauri::State<'_, BridgeProcessState>,
+    input: VoiceConfigInput,
+) -> Result<VoiceConfigSummary, String> {
+    let _guard = state
+        .voice_settings
+        .lock()
+        .map_err(|_| "voice config lock is poisoned".to_string())?;
+    let provider = normalize_voice_provider(&input.provider)?;
+    let stt_url = required_http_url(input.stt_url, "STT URL")?;
+    let tts_url = required_http_url(input.tts_url, "TTS URL")?;
+    let stepfun_voice = {
+        let value = input.stepfun_voice.trim();
+        if value.is_empty() {
+            "cixingnansheng".to_string()
+        } else {
+            value.to_string()
+        }
+    };
+    let (api_key, keyring_account) = if provider == "stepfun" {
+        (input.stepfun_api_key.trim(), VOICE_KEYRING_ACCOUNT_STEPFUN)
+    } else {
+        (input.api_key.trim(), VOICE_KEYRING_ACCOUNT_REMOTE)
+    };
+    if provider == "stepfun"
+        && api_key.is_empty()
+        && !voice_api_key_exists(VOICE_KEYRING_ACCOUNT_STEPFUN)
+    {
+        return Err("Step Fun API Key is required for a new voice configuration.".to_string());
+    }
+    if !api_key.is_empty() {
+        write_voice_api_key(keyring_account, api_key)?;
+    }
+
+    let stepfun_base_url = optional_http_url(input.stepfun_base_url, "Step Fun 服务链接")?;
+    let config = StoredVoiceConfig {
+        provider,
+        stt_url,
+        tts_url,
+        stepfun_voice,
+        stepfun_base_url,
+    };
+    write_voice_config_store(&app, &config)?;
+    state.stop_voice_bridge();
+    Ok(voice_config_summary(&config))
+}
+
+#[tauri::command]
 fn resolve_model_config(
     app: AppHandle,
     state: tauri::State<'_, BridgeProcessState>,
@@ -555,14 +675,11 @@ async fn ensure_desktop_voice_bridge(
     app: AppHandle,
     state: tauri::State<'_, BridgeProcessState>,
 ) -> Result<DesktopVoiceBridgeConfig, String> {
-    if let Some(config) = state
-        .voice_config
-        .lock()
-        .map_err(|_| "voice bridge config lock is poisoned".to_string())?
-        .clone()
-    {
+    let _startup_guard = state.voice_start.lock().await;
+    if let Some(config) = state.current_voice_config() {
         return Ok(config);
     }
+    let generation = state.voice_generation.load(Ordering::SeqCst);
 
     let runtime = resolve_desktop_runtime(&app)?;
     let default_workspace = default_workspace_for_runtime(&runtime);
@@ -579,28 +696,52 @@ async fn ensure_desktop_voice_bridge(
             .map_err(|_| "model config lock is poisoned".to_string())?;
         resolve_active_model_config(&app)?
     };
-    let voice_settings = load_voice_settings_impl(&app)?;
+    let voice_config = {
+        let _guard = state
+            .voice_settings
+            .lock()
+            .map_err(|_| "voice config lock is poisoned".to_string())?;
+        resolve_voice_config(&app)?
+    };
     let log_path = bridge_log_path(&app, "desktop-voice-bridge.log");
     let (child, config) = tauri::async_runtime::spawn_blocking(move || {
-        start_desktop_voice_bridge_process(
-            runtime,
-            workspace,
-            active_model,
-            voice_settings,
-            log_path,
-        )
+        start_desktop_voice_bridge_process(runtime, workspace, active_model, voice_config, log_path)
     })
     .await
     .map_err(|error| format!("Desktop voice bridge startup task failed: {error}"))??;
 
+    if generation != state.voice_generation.load(Ordering::SeqCst) {
+        terminate_child_process(child);
+        return Err(
+            "Desktop voice bridge startup was cancelled by a configuration change.".to_string(),
+        );
+    }
+
     *state
         .voice_child
         .lock()
-        .map_err(|_| "voice bridge process lock is poisoned".to_string())? = Some(child);
+        .map_err(|_| "voice bridge child lock is poisoned".to_string())? = Some(child);
     *state
         .voice_config
         .lock()
         .map_err(|_| "voice bridge config lock is poisoned".to_string())? = Some(config.clone());
+
+    if generation != state.voice_generation.load(Ordering::SeqCst) {
+        let process = state
+            .voice_child
+            .lock()
+            .ok()
+            .and_then(|mut child| child.take());
+        if let Some(process) = process {
+            terminate_child_process(process);
+        }
+        if let Ok(mut current) = state.voice_config.lock() {
+            *current = None;
+        }
+        return Err(
+            "Desktop voice bridge startup was cancelled by a configuration change.".to_string(),
+        );
+    }
 
     Ok(config)
 }
@@ -609,7 +750,7 @@ fn start_desktop_voice_bridge_process(
     runtime: DesktopRuntime,
     workspace: PathBuf,
     active_model: Option<ResolvedModelConfig>,
-    voice_settings: VoiceSettings,
+    voice_config: ResolvedVoiceConfig,
     log_path: Option<PathBuf>,
 ) -> Result<(Child, DesktopVoiceBridgeConfig), String> {
     initialize_bridge_log(
@@ -620,29 +761,38 @@ fn start_desktop_voice_bridge_process(
         runtime.app_workspace(),
         &workspace,
     );
+
     let mut command = runtime.command(BridgeCommandKind::Voice, &workspace);
     command.stdin(Stdio::null()).stdout(Stdio::piped());
     configure_bridge_stderr(&mut command, log_path.as_ref());
-    if voice_settings.provider == "stepfun" {
-        if !voice_settings.stepfun_key.trim().is_empty() {
-            command.env("STEPFUN_API_KEY", voice_settings.stepfun_key.trim());
-        }
-        command
-            .arg("--stepfun-voice")
-            .arg(voice_settings.stepfun_voice.trim());
-    } else {
-        command.arg("--stt-url").arg(voice_settings.stt_url.trim());
-        command.arg("--tts-url").arg(voice_settings.tts_url.trim());
-    }
-    if voice_settings.tts_enabled {
-        command.arg("--tts-enabled");
-    }
     if let Some(model) = active_model {
         command
             .env("REASONING_DESKTOP_MODEL_CONFIG_ID", model.id)
             .env("REASONING_DESKTOP_MODEL_BASE_URL", model.base_url)
             .env("REASONING_DESKTOP_MODEL_API_KEY", model.api_key)
             .env("REASONING_DESKTOP_MODEL_NAME", model.model_name);
+    }
+    let is_stepfun = voice_config.provider == "stepfun";
+    command
+        .env("REASONING_DESKTOP_VOICE_PROVIDER", voice_config.provider)
+        .env("REASONING_DESKTOP_STT_URL", voice_config.stt_url)
+        .env("REASONING_DESKTOP_TTS_URL", voice_config.tts_url)
+        .env(
+            "REASONING_DESKTOP_STEPFUN_VOICE",
+            voice_config.stepfun_voice,
+        );
+    if is_stepfun {
+        if let Some(api_key) = voice_config.api_key {
+            command.env("REASONING_DESKTOP_STEPFUN_API_KEY", api_key);
+        }
+        if !voice_config.stepfun_base_url.is_empty() {
+            command.env(
+                "REASONING_DESKTOP_STEPFUN_BASE_URL",
+                voice_config.stepfun_base_url,
+            );
+        }
+    } else if let Some(api_key) = voice_config.api_key {
+        command.env("REASONING_DESKTOP_VOICE_API_KEY", api_key);
     }
     #[cfg(target_os = "windows")]
     command.creation_flags(CREATE_NO_WINDOW);
@@ -679,22 +829,6 @@ fn start_desktop_voice_bridge_process(
     })?;
 
     Ok((child, config))
-}
-
-#[tauri::command]
-fn load_voice_settings(app: AppHandle) -> Result<VoiceSettings, String> {
-    load_voice_settings_impl(&app)
-}
-
-#[tauri::command]
-fn save_voice_settings(
-    app: AppHandle,
-    state: tauri::State<'_, BridgeProcessState>,
-    input: VoiceSettingsInput,
-) -> Result<VoiceSettings, String> {
-    let saved = save_voice_settings_impl(&app, input)?;
-    state.stop_voice_bridge();
-    Ok(saved)
 }
 
 #[tauri::command]
@@ -1027,78 +1161,95 @@ fn write_model_api_key(id: &str, api_key: &str) -> Result<(), String> {
         .map_err(|error| format!("Could not save API Key to system credential store: {error}"))
 }
 
-fn read_voice_stepfun_key() -> Result<String, String> {
-    keyring::Entry::new(VOICE_KEYRING_SERVICE, "stepfun")
+fn voice_config_summary(config: &StoredVoiceConfig) -> VoiceConfigSummary {
+    let has_api_key = normalize_voice_provider(&config.provider)
+        .ok()
+        .and_then(|provider| voice_keyring_account(&provider))
+        .map(voice_api_key_exists)
+        .unwrap_or(false);
+    VoiceConfigSummary {
+        provider: config.provider.clone(),
+        stt_url: config.stt_url.clone(),
+        tts_url: config.tts_url.clone(),
+        stepfun_voice: config.stepfun_voice.clone(),
+        stepfun_base_url: config.stepfun_base_url.clone(),
+        has_api_key,
+    }
+}
+
+fn resolve_voice_config(app: &AppHandle) -> Result<ResolvedVoiceConfig, String> {
+    let config = read_voice_config_store(app)?;
+    let provider = normalize_voice_provider(&config.provider)?;
+    let api_key = if provider == "stepfun" {
+        Some(read_voice_api_key(VOICE_KEYRING_ACCOUNT_STEPFUN)?)
+    } else {
+        read_voice_api_key(VOICE_KEYRING_ACCOUNT_REMOTE).ok()
+    };
+    Ok(ResolvedVoiceConfig {
+        provider,
+        stt_url: config.stt_url,
+        tts_url: config.tts_url,
+        api_key,
+        stepfun_voice: config.stepfun_voice,
+        stepfun_base_url: config.stepfun_base_url,
+    })
+}
+
+fn voice_keyring_account(provider: &str) -> Option<&'static str> {
+    match provider {
+        "remote" => Some(VOICE_KEYRING_ACCOUNT_REMOTE),
+        "stepfun" => Some(VOICE_KEYRING_ACCOUNT_STEPFUN),
+        _ => None,
+    }
+}
+
+fn normalize_voice_provider(value: &str) -> Result<String, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "remote" | "remote_url" | "self_hosted" | "local" => Ok("remote".to_string()),
+        "stepfun" | "step_fun" | "step-fun" => Ok("stepfun".to_string()),
+        _ => Err("Voice provider must be remote or stepfun.".to_string()),
+    }
+}
+
+fn optional_http_url(value: String, label: &str) -> Result<String, String> {
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        return Ok(value);
+    }
+    required_http_url(value, label)
+}
+
+fn required_http_url(value: String, label: &str) -> Result<String, String> {
+    let value = required_value(value, label)?;
+    if value.starts_with("http://") || value.starts_with("https://") {
+        Ok(value)
+    } else {
+        Err(format!("{label} must start with http:// or https://."))
+    }
+}
+
+fn read_voice_api_key(account: &str) -> Result<String, String> {
+    keyring::Entry::new(VOICE_KEYRING_SERVICE, account)
         .map_err(|error| format!("Could not open system credential store: {error}"))?
         .get_password()
-        .map_err(|error| format!("Could not read StepFun Key from system credential store: {error}"))
+        .map_err(|error| {
+            format!("Could not read voice API Key from system credential store: {error}")
+        })
 }
 
-fn write_voice_stepfun_key(api_key: &str) -> Result<(), String> {
-    keyring::Entry::new(VOICE_KEYRING_SERVICE, "stepfun")
+fn write_voice_api_key(account: &str, api_key: &str) -> Result<(), String> {
+    keyring::Entry::new(VOICE_KEYRING_SERVICE, account)
         .map_err(|error| format!("Could not open system credential store: {error}"))?
         .set_password(api_key)
-        .map_err(|error| format!("Could not save StepFun Key to system credential store: {error}"))
+        .map_err(|error| {
+            format!("Could not save voice API Key to system credential store: {error}")
+        })
 }
 
-fn load_voice_settings_impl(app: &AppHandle) -> Result<VoiceSettings, String> {
-    let stored = read_voice_config_store(app)?;
-    let stepfun_key = read_voice_stepfun_key().unwrap_or_default();
-    Ok(VoiceSettings {
-        provider: normalize_voice_provider(&stored.provider).to_string(),
-        stt_url: stored.stt_url,
-        tts_url: stored.tts_url,
-        stepfun_voice: stored.stepfun_voice,
-        stepfun_key: String::new(),
-        has_stepfun_key: !stepfun_key.trim().is_empty(),
-        tts_enabled: stored.tts_enabled,
-    })
-}
-
-fn save_voice_settings_impl(
-    app: &AppHandle,
-    input: VoiceSettingsInput,
-) -> Result<VoiceSettings, String> {
-    let provider = normalize_voice_provider(&input.provider).to_string();
-    let stt_url = required_value(input.stt_url, "STT URL")?;
-    let tts_url = required_value(input.tts_url, "TTS URL")?;
-    let stepfun_voice = required_value(input.stepfun_voice, "StepFun voice")?;
-    let stepfun_key = input.stepfun_key.trim().to_string();
-    let existing_stepfun_key = read_voice_stepfun_key().unwrap_or_default();
-
-    if provider == "stepfun" && stepfun_key.is_empty() && existing_stepfun_key.trim().is_empty() {
-        return Err("StepFun Key is required when StepFun voice is enabled.".to_string());
-    }
-    if !stepfun_key.is_empty() {
-        write_voice_stepfun_key(&stepfun_key)?;
-    }
-
-    let stored = StoredVoiceConfig {
-        provider: provider.clone(),
-        stepfun_voice: stepfun_voice.clone(),
-        stt_url: stt_url.clone(),
-        tts_url: tts_url.clone(),
-        tts_enabled: input.tts_enabled,
-    };
-    write_voice_config_store(app, &stored)?;
-
-    Ok(VoiceSettings {
-        provider,
-        stt_url,
-        tts_url,
-        stepfun_voice,
-        stepfun_key: String::new(),
-        has_stepfun_key: !stepfun_key.is_empty() || !existing_stepfun_key.trim().is_empty(),
-        tts_enabled: input.tts_enabled,
-    })
-}
-
-fn normalize_voice_provider(provider: &str) -> &str {
-    if provider == "stepfun" {
-        "stepfun"
-    } else {
-        "custom"
-    }
+fn voice_api_key_exists(account: &str) -> bool {
+    read_voice_api_key(account)
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
 }
 
 fn required_value(value: String, label: &str) -> Result<String, String> {
@@ -1211,8 +1362,8 @@ pub fn run() {
             desktop_metadata,
             ensure_desktop_bridge,
             ensure_desktop_voice_bridge,
-            load_voice_settings,
-            save_voice_settings,
+            get_voice_config,
+            save_voice_config,
             select_workspace_folder,
             open_voice_window,
             list_model_configs,
@@ -1322,7 +1473,7 @@ fn display_path(path: impl AsRef<Path>) -> String {
 mod tests {
     use super::{
         bounded_error_preview, desktop_diagnostics_payload, format_startup_error,
-        open_diagnostics_path, workspace_label,
+        normalize_voice_provider, open_diagnostics_path, required_http_url, workspace_label,
     };
     use std::{
         path::{Path, PathBuf},
@@ -1337,6 +1488,22 @@ mod tests {
     #[test]
     fn workspace_label_uses_windows_drive_when_path_is_drive_root() {
         assert_eq!(workspace_label(Path::new(r"D:\")), "D");
+    }
+
+    #[test]
+    fn voice_provider_accepts_legacy_aliases() {
+        assert_eq!(normalize_voice_provider("remote_url").unwrap(), "remote");
+        assert_eq!(normalize_voice_provider("step_fun").unwrap(), "stepfun");
+        assert!(normalize_voice_provider("unknown").is_err());
+    }
+
+    #[test]
+    fn voice_urls_require_http_or_https() {
+        assert_eq!(
+            required_http_url(" https://voice.example.com ".to_string(), "STT URL").unwrap(),
+            "https://voice.example.com"
+        );
+        assert!(required_http_url("localhost:8765".to_string(), "STT URL").is_err());
     }
 
     #[test]

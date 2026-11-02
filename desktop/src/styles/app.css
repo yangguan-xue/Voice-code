@@ -18,6 +18,7 @@ body {
 
 button,
 textarea,
+input,
 select {
   font: inherit;
 }
@@ -130,9 +131,9 @@ select {
 
 .settings-sheet {
   width: min(780px, 100%);
-  height: min(720px, calc(100vh - 48px));
+  height: min(560px, calc(100vh - 48px));
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 8px;
@@ -205,45 +206,46 @@ select {
   outline: none;
 }
 
-.settings-stack {
-  min-height: 0;
-  overflow-y: auto;
-}
-
-.settings-section {
-  display: grid;
-  gap: 18px;
-  padding: 20px 22px 24px;
-}
-
-.settings-section + .settings-section {
-  border-top: 1px solid var(--border-secondary);
-}
-
-.settings-section-heading {
-  display: grid;
-  gap: 4px;
-}
-
-.settings-section-heading h3,
-.settings-section-heading p {
-  margin: 0;
-}
-
-.settings-section-heading h3 {
-  color: var(--text-bright);
-  font-size: 16px;
-}
-
-.settings-section-heading p {
-  color: var(--text-dim);
-  font-size: var(--font-ui-md);
-}
-
 .settings-content {
   min-height: 0;
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr);
+}
+
+.settings-content-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.settings-tabs {
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border-secondary);
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.settings-tabs button {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--font-ui-md);
+  font-weight: 700;
+}
+
+.settings-tabs button:hover,
+.settings-tabs button:focus-visible,
+.settings-tabs .settings-tab-active {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+  outline: none;
 }
 
 .diagnostics-content {
@@ -463,7 +465,8 @@ select {
   font-weight: 650;
 }
 
-.model-config-form input {
+.model-config-form input,
+.model-config-form select {
   width: 100%;
   height: 40px;
   padding: 0 11px;
@@ -474,7 +477,8 @@ select {
   color: var(--text-primary);
 }
 
-.model-config-form input:focus {
+.model-config-form input:focus,
+.model-config-form select:focus {
   border-color: rgba(114, 184, 255, 0.58);
   box-shadow: 0 0 0 2px rgba(114, 184, 255, 0.12);
 }
@@ -525,69 +529,6 @@ select {
 
 .settings-save-button:disabled {
   opacity: 0.55;
-}
-
-.voice-settings-form {
-  display: grid;
-  gap: 16px;
-}
-
-.voice-settings-form label {
-  display: grid;
-  gap: 7px;
-}
-
-.voice-settings-form label > span {
-  color: var(--text-secondary);
-  font-size: var(--font-ui-md);
-  font-weight: 650;
-}
-
-.voice-settings-form input,
-.voice-settings-form select {
-  width: 100%;
-  min-height: 40px;
-  padding: 0 11px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 6px;
-  outline: none;
-  background: rgba(0, 0, 0, 0.18);
-  color: var(--text-primary);
-}
-
-.voice-settings-form input:focus,
-.voice-settings-form select:focus {
-  border-color: rgba(114, 184, 255, 0.58);
-  box-shadow: 0 0 0 2px rgba(114, 184, 255, 0.12);
-}
-
-.voice-settings-toggle {
-  display: flex !important;
-  align-items: center;
-  gap: 10px;
-}
-
-.voice-settings-toggle input {
-  width: 16px;
-  min-height: 16px;
-  margin: 0;
-}
-
-.voice-settings-toggle span {
-  color: var(--text-primary) !important;
-  font-weight: 500 !important;
-}
-
-.voice-settings-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.voice-settings-hint {
-  color: var(--text-dim);
-  font-size: var(--font-ui-sm);
 }
 
 .new-task-button {
@@ -1521,6 +1462,38 @@ select {
 }
 
 @media (max-width: 560px) {
+  .settings-backdrop {
+    padding: 12px;
+  }
+
+  .settings-sheet {
+    height: min(620px, calc(100vh - 24px));
+  }
+
+  .settings-content {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .model-config-list {
+    max-height: 148px;
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-right: 0;
+    border-bottom: 1px solid var(--border-secondary);
+  }
+
+  .model-config-new,
+  .model-config-row {
+    width: auto;
+    flex: 0 0 150px;
+  }
+
+  .model-config-form {
+    padding: 18px;
+  }
+
   .conversation-canvas {
     padding: 24px 16px 28px;
   }

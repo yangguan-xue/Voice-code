@@ -8,6 +8,7 @@ import {
   type BridgeRequestMethod,
   type BridgeResponse,
   type BootstrapResult,
+  DEFAULT_VOICE_CONFIG,
   type DesktopBridgeClient,
   type ModelProfileSummary,
   type ModelConfigInput,
@@ -16,8 +17,9 @@ import {
   type SessionResumeResult,
   type TurnStartOptions,
   type TurnStartResult,
-  type VoiceSettings,
-  type VoiceSettingsInput
+  type VoiceConfigInput,
+  type VoiceConfigSummary,
+  type VoiceProvider
 } from "./protocol";
 
 type EmitBridgeEvent = (event: BridgeEvent) => void;
@@ -64,7 +66,8 @@ export class WebSocketBridgeClient implements DesktopBridgeClient {
       branches: readStringArray(payload, "branches"),
       isDirty: readBoolean(payload, "isDirty"),
       activeProfile: readString(payload, "activeProfile"),
-      modelProfiles: readModelProfiles(payload)
+      modelProfiles: readModelProfiles(payload),
+      voiceConfig: readVoiceConfig(payload)
     };
   }
 
@@ -117,12 +120,8 @@ export class WebSocketBridgeClient implements DesktopBridgeClient {
     throw new BridgeClientError("Model configuration storage requires the desktop app.", "UNAVAILABLE");
   }
 
-  async loadVoiceSettings(): Promise<VoiceSettings> {
-    throw new BridgeClientError("Voice settings require the desktop app.", "UNAVAILABLE");
-  }
-
-  async saveVoiceSettings(_input: VoiceSettingsInput): Promise<VoiceSettings> {
-    throw new BridgeClientError("Voice settings require the desktop app.", "UNAVAILABLE");
+  async saveVoiceConfig(_input: VoiceConfigInput): Promise<VoiceConfigSummary> {
+    throw new BridgeClientError("Voice configuration storage requires the desktop app.", "UNAVAILABLE");
   }
 
   async startTurn(text: string, options?: TurnStartOptions): Promise<TurnStartResult> {
@@ -313,6 +312,27 @@ function readModelProfiles(payload: Record<string, unknown>): ModelProfileSummar
       modelName: typeof profile.modelName === "string" ? profile.modelName : id
     }];
   });
+}
+
+function readVoiceConfig(payload: Record<string, unknown>): VoiceConfigSummary {
+  const value = payload.voiceConfig;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return DEFAULT_VOICE_CONFIG;
+  }
+  const config = value as Record<string, unknown>;
+  const provider = readVoiceProvider(config.provider);
+  return {
+    provider,
+    sttUrl: readString(config, "sttUrl") || DEFAULT_VOICE_CONFIG.sttUrl,
+    ttsUrl: readString(config, "ttsUrl") || DEFAULT_VOICE_CONFIG.ttsUrl,
+    stepfunVoice: readString(config, "stepfunVoice") || DEFAULT_VOICE_CONFIG.stepfunVoice,
+    stepfunBaseUrl: readString(config, "stepfunBaseUrl"),
+    hasApiKey: readBoolean(config, "hasApiKey")
+  };
+}
+
+function readVoiceProvider(value: unknown): VoiceProvider {
+  return value === "stepfun" ? "stepfun" : "remote";
 }
 
 function readConversation(payload: Record<string, unknown>): SessionResumeResult["conversation"] {

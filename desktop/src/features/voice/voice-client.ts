@@ -65,19 +65,32 @@ class TauriVoiceClient implements DesktopVoiceClient {
   private socket: WebSocket | null = null;
   private config: VoiceBridgeConfig | null = null;
   private opening: Promise<WebSocket> | null = null;
+  private openingReject: ((error: Error) => void) | null = null;
+  private connecting: Promise<VoiceBridgeConfig> | null = null;
+  private lifecycleVersion = 0;
   private requestIndex = 0;
   private pending = new Map<string, PendingRequest>();
 
   constructor(private readonly emit: (event: VoiceUiEvent) => void) {}
 
   async connect(): Promise<VoiceBridgeConfig> {
-    if (!this.config) {
-      this.config = validateVoiceBridgeConfig(
-        await invoke<VoiceBridgeConfig>("ensure_desktop_voice_bridge")
-      );
+    if (this.socket?.readyState === WebSocket.OPEN && this.config) {
+      return this.config;
     }
-    await this.openSocket();
-    return this.config;
+    if (this.connecting) {
+      return this.connecting;
+    }
+
+    const lifecycleVersion = this.lifecycleVersion;
+    const connecting = this.connectInternal(lifecycleVersion);
+    this.connecting = connecting;
+    try {
+      return await connecting;
+    } finally {
+      if (this.connecting === connecting) {
+        this.connecting = null;
+      }
+    }
   }
 
   async startTurn(text: string, options?: VoiceTurnStartOptions): Promise<void> {
@@ -116,10 +129,17 @@ class TauriVoiceClient implements DesktopVoiceClient {
   }
 
   close(): void {
-    this.rejectPending(new Error("Desktop voice bridge connection closed."));
-    this.socket?.close();
-    this.socket = null;
+    this.lifecycleVersion += 1;
+    const error = new Error("Desktop voice bridge connection closed.");
+    this.rejectPending(error);
+    this.openingReject?.(error);
+    this.openingReject = null;
     this.opening = null;
+    const socket = this.socket;
+    this.socket = null;
+    this.config = null;
+    socket?.close();
+    this.connecting = null;
   }
 
   private async request(method: string, payload: Record<string, unknown>) {
@@ -142,8 +162,9 @@ class TauriVoiceClient implements DesktopVoiceClient {
   }
 
   private async openSocket(): Promise<WebSocket> {
-    if (this.socket?.readyState === WebSocket.OPEN) {
-      return this.socket;
+    const connectedSocket = this.socket;
+    if (connectedSocket && connectedSocket.readyState === WebSocket.OPEN) {
+      return connectedSocket;
     }
     if (this.opening) {
       return this.opening;
@@ -152,29 +173,89 @@ class TauriVoiceClient implements DesktopVoiceClient {
       await this.connect();
     }
 
-    this.opening = new Promise((resolve, reject) => {
-      const socket = new WebSocket(this.config?.url ?? "");
-      this.socket = socket;
+    const reconnectedSocket = this.socket;
+    if (reconnectedSocket && reconnectedSocket.readyState === WebSocket.OPEN) {
+      return reconnectedSocket;
+    }
+    if (this.opening) {
+      return this.opening;
+    }
+
+    const config = this.config;
+    if (!config) {
+      throw new Error("Desktop voice bridge connection was closed.");
+    }
+
+    const socket = new WebSocket(config.url);
+    this.socket = socket;
+    let rejectOpening: (error: Error) => void = () => undefined;
+    const opening = new Promise<WebSocket>((resolve, reject) => {
+      rejectOpening = reject;
+
+      const clearOpening = () => {
+        if (this.opening === opening) {
+          this.opening = null;
+          this.openingReject = null;
+        }
+      };
 
       socket.addEventListener("open", () => {
-        this.opening = null;
+        if (this.socket !== socket) {
+          return;
+        }
+        clearOpening();
         resolve(socket);
       });
       socket.addEventListener("message", (event) => this.handleMessage(event.data));
       socket.addEventListener("error", () => {
+        if (this.socket !== socket) {
+          return;
+        }
         const error = new Error("Desktop voice bridge connection failed.");
-        this.opening = null;
-        reject(error);
+        const wasOpening = this.opening === opening;
+        clearOpening();
+        this.socket = null;
+        this.config = null;
+        if (wasOpening) {
+          rejectOpening(error);
+        }
         this.rejectPending(error);
       });
       socket.addEventListener("close", () => {
-        this.opening = null;
+        if (this.socket !== socket) {
+          return;
+        }
+        const error = new Error("Desktop voice bridge connection closed.");
+        const wasOpening = this.opening === opening;
+        clearOpening();
         this.socket = null;
-        this.rejectPending(new Error("Desktop voice bridge connection closed."));
+        this.config = null;
+        if (wasOpening) {
+          rejectOpening(error);
+        }
+        this.rejectPending(error);
       });
     });
+    this.opening = opening;
+    this.openingReject = rejectOpening;
 
-    return this.opening;
+    return opening;
+  }
+
+  private async connectInternal(lifecycleVersion: number): Promise<VoiceBridgeConfig> {
+    if (!this.config) {
+      const rawConfig = await invoke<VoiceBridgeConfig>("ensure_desktop_voice_bridge");
+      const config = validateVoiceBridgeConfig(rawConfig);
+      if (lifecycleVersion !== this.lifecycleVersion) {
+        throw new Error("Desktop voice bridge connection was cancelled.");
+      }
+      this.config = config;
+    }
+    await this.openSocket();
+    if (!this.config) {
+      throw new Error("Desktop voice bridge connection was closed.");
+    }
+    return this.config;
   }
 
   private handleMessage(rawData: unknown): void {
