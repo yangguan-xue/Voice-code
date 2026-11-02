@@ -1,3 +1,4 @@
+import { DEFAULT_VOICE_CONFIG } from "./protocol";
 import type {
   BridgeEvent,
   BootstrapResult,
@@ -8,8 +9,8 @@ import type {
   SessionResumeResult,
   TurnStartOptions,
   TurnStartResult,
-  VoiceSettings,
-  VoiceSettingsInput
+  VoiceConfigInput,
+  VoiceConfigSummary
 } from "./protocol";
 
 type EmitBridgeEvent = (event: BridgeEvent) => void;
@@ -17,14 +18,10 @@ type EmitBridgeEvent = (event: BridgeEvent) => void;
 export class MockBridgeClient implements DesktopBridgeClient {
   private nextTurnId = 1;
   private modelConfigs: ModelProfileSummary[] = [];
-  private voiceSettings: VoiceSettings = {
-    provider: "custom",
-    sttUrl: "http://localhost:8765",
-    ttsUrl: "http://localhost:8775",
-    stepfunVoice: "cixingnansheng",
-    stepfunKey: "",
-    hasStepfunKey: false,
-    ttsEnabled: false
+  private voiceConfig: VoiceConfigSummary = DEFAULT_VOICE_CONFIG;
+  private voiceApiKeys: Record<VoiceConfigSummary["provider"], boolean> = {
+    remote: false,
+    stepfun: false
   };
 
   constructor(
@@ -64,7 +61,8 @@ export class MockBridgeClient implements DesktopBridgeClient {
       modelProfiles: [
         { id: "deepseek", label: "deepseek", modelName: "deepseek-v4-pro" },
         { id: "local_openai", label: "local_openai", modelName: "your-local-model" }
-      ]
+      ],
+      voiceConfig: this.voiceConfig
     };
   }
 
@@ -98,7 +96,8 @@ export class MockBridgeClient implements DesktopBridgeClient {
             status: "completed",
             finishReason: "completed",
             tools: [],
-            errorText: ""
+            errorText: "",
+            statusNotices: []
           }
         ]
       }
@@ -140,22 +139,23 @@ export class MockBridgeClient implements DesktopBridgeClient {
     return existed;
   }
 
-  async loadVoiceSettings(): Promise<VoiceSettings> {
-    return this.voiceSettings;
-  }
-
-  async saveVoiceSettings(input: VoiceSettingsInput): Promise<VoiceSettings> {
-    const nextKey = input.stepfunKey.trim();
-    this.voiceSettings = {
+  async saveVoiceConfig(input: VoiceConfigInput): Promise<VoiceConfigSummary> {
+    const apiKey = input.provider === "stepfun" ? input.stepfunApiKey : input.apiKey;
+    if (input.provider === "stepfun" && !apiKey && !this.voiceApiKeys.stepfun) {
+      throw new Error("Step Fun API Key is required for a new voice configuration.");
+    }
+    if (apiKey) {
+      this.voiceApiKeys[input.provider] = true;
+    }
+    this.voiceConfig = {
       provider: input.provider,
-      sttUrl: input.sttUrl.trim(),
-      ttsUrl: input.ttsUrl.trim(),
-      stepfunVoice: input.stepfunVoice.trim(),
-      stepfunKey: "",
-      hasStepfunKey: nextKey.length > 0 || this.voiceSettings.hasStepfunKey,
-      ttsEnabled: input.ttsEnabled
+      sttUrl: input.sttUrl.trim() || DEFAULT_VOICE_CONFIG.sttUrl,
+      ttsUrl: input.ttsUrl.trim() || DEFAULT_VOICE_CONFIG.ttsUrl,
+      stepfunVoice: input.stepfunVoice.trim() || DEFAULT_VOICE_CONFIG.stepfunVoice,
+      stepfunBaseUrl: input.stepfunBaseUrl.trim(),
+      hasApiKey: this.voiceApiKeys[input.provider]
     };
-    return this.voiceSettings;
+    return this.voiceConfig;
   }
 
   async startTurn(text: string, _options?: TurnStartOptions): Promise<TurnStartResult> {

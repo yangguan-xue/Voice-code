@@ -77,6 +77,7 @@ export type BootstrapResult = {
   isDirty: boolean;
   activeProfile: string;
   modelProfiles: ModelProfileSummary[];
+  voiceConfig: VoiceConfigSummary;
 };
 
 export type ModelProfileSummary = {
@@ -96,26 +97,37 @@ export type ModelConfigInput = {
   modelName: string;
 };
 
-export type VoiceSettings = {
-  provider: "custom" | "stepfun";
-  sttUrl: string;
-  ttsUrl: string;
-  stepfunVoice: string;
-  stepfunKey: string;
-  hasStepfunKey: boolean;
-  ttsEnabled: boolean;
-};
-
-export type VoiceSettingsInput = {
-  provider: "custom" | "stepfun";
-  sttUrl: string;
-  ttsUrl: string;
-  stepfunVoice: string;
-  stepfunKey: string;
-  ttsEnabled: boolean;
-};
-
 export type ResolvedModelConfig = ModelConfigInput & { id: string };
+
+export type VoiceProvider = "remote" | "stepfun";
+
+export type VoiceConfigSummary = {
+  provider: VoiceProvider;
+  sttUrl: string;
+  ttsUrl: string;
+  stepfunVoice: string;
+  stepfunBaseUrl: string;
+  hasApiKey: boolean;
+};
+
+export type VoiceConfigInput = {
+  provider: VoiceProvider;
+  sttUrl: string;
+  ttsUrl: string;
+  apiKey: string;
+  stepfunApiKey: string;
+  stepfunVoice: string;
+  stepfunBaseUrl: string;
+};
+
+export const DEFAULT_VOICE_CONFIG: VoiceConfigSummary = {
+  provider: "remote",
+  sttUrl: "http://localhost:8765",
+  ttsUrl: "http://localhost:8775",
+  stepfunVoice: "cixingnansheng",
+  stepfunBaseUrl: "",
+  hasApiKey: false
+};
 
 export type RestoredConversation = {
   turns: Array<{
@@ -135,6 +147,7 @@ export type RestoredConversation = {
       status: "running" | "completed" | "error";
     }>;
     errorText: string;
+    statusNotices: string[];
   }>;
   activeTurnId: number | null;
 };
@@ -173,8 +186,7 @@ export type DesktopBridgeClient = {
   configureModel: (config: ResolvedModelConfig) => Promise<{ profile: string; modelName: string }>;
   saveModelConfig: (input: ModelConfigInput) => Promise<ModelProfileSummary>;
   deleteModelConfig: (id: string) => Promise<boolean>;
-  loadVoiceSettings: () => Promise<VoiceSettings>;
-  saveVoiceSettings: (input: VoiceSettingsInput) => Promise<VoiceSettings>;
+  saveVoiceConfig: (input: VoiceConfigInput) => Promise<VoiceConfigSummary>;
   startTurn: (text: string, options?: TurnStartOptions) => Promise<TurnStartResult>;
   interruptTurn: (turnId?: number) => Promise<boolean>;
   resolvePermission: (payload: PermissionResolvePayload) => Promise<boolean>;

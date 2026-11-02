@@ -6,6 +6,7 @@ import asyncio
 import secrets
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from langchain_openai import ChatOpenAI
 
@@ -17,10 +18,15 @@ from voice_code.llm.models import init_model
 from voice_code.permissions import PermissionContext, load_workspace_rules
 from voice_code.voice.agent_bridge import AgentBridge
 from voice_code.voice.audio_player import AudioPlayer
-from voice_code.voice.stepfun_client import StepFunASRClient, StepFunTTSClient
+from voice_code.voice.stepfun_client import DEFAULT_VOICE, StepFunASRClient, StepFunTTSClient
 from voice_code.voice.stt_client import SttClient
 from voice_code.voice.tts_client import VoxcTtsClient
 from voice_code.voice.types import SupportsSttClient, SupportsTtsClient
+
+REMOTE_VOICE_PROVIDER = "remote"
+STEPFUN_VOICE_PROVIDER = "stepfun"
+DEFAULT_REMOTE_STT_URL = "http://localhost:8765"
+DEFAULT_REMOTE_TTS_URL = "http://localhost:8775"
 
 
 @dataclass(slots=True)
@@ -40,10 +46,13 @@ async def create_desktop_voice_runtime(
     profile: str | None = None,
     workspace: str | None = None,
     token: str | None = None,
-    stt_url: str = "http://localhost:8765",
-    tts_url: str = "http://localhost:8775",
+    voice_provider: str | None = None,
+    stt_url: str = DEFAULT_REMOTE_STT_URL,
+    tts_url: str = DEFAULT_REMOTE_TTS_URL,
     stepfun_key: str = "",
-    stepfun_voice: str = "cixingnansheng",
+    stepfun_voice: str = DEFAULT_VOICE,
+    stepfun_base_url: str = "",
+    voice_api_key: str = "",
     tts_muted: bool = True,
     api_key: str | None = None,
     base_url: str | None = None,
@@ -112,17 +121,15 @@ async def create_desktop_voice_runtime(
         )
         return parallel_agent_bridge
 
-    if stepfun_key:
-        stt_client: SupportsSttClient = StepFunASRClient(api_key=stepfun_key)
-        tts_client: SupportsTtsClient = StepFunTTSClient(
-            api_key=stepfun_key,
-            voice=stepfun_voice,
-        )
-        backend = "Step Fun"
-    else:
-        stt_client = SttClient(base_url=f"{stt_url.rstrip('/')}/transcribe")
-        tts_client = VoxcTtsClient(base_url=f"{tts_url.rstrip('/')}/tts")
-        backend = "自建语音服务"
+    stt_client, tts_client, backend = create_voice_clients(
+        voice_provider=voice_provider,
+        stt_url=stt_url,
+        tts_url=tts_url,
+        stepfun_key=stepfun_key,
+        stepfun_voice=stepfun_voice,
+        stepfun_base_url=stepfun_base_url,
+        voice_api_key=voice_api_key,
+    )
 
     resolved_token = token or secrets.token_urlsafe(32)
     bridge = DesktopVoiceBridge(
@@ -173,3 +180,68 @@ def runtime_payload(bundle: DesktopVoiceRuntime, *, url: str) -> dict[str, Any]:
         "backend": bundle.backend,
         "ttsMuted": bundle.bridge.tts_muted,
     }
+
+
+def create_voice_clients(
+    *,
+    voice_provider: str | None = None,
+    stt_url: str = DEFAULT_REMOTE_STT_URL,
+    tts_url: str = DEFAULT_REMOTE_TTS_URL,
+    stepfun_key: str = "",
+    stepfun_voice: str = DEFAULT_VOICE,
+    stepfun_base_url: str = "",
+    voice_api_key: str = "",
+) -> tuple[SupportsSttClient, SupportsTtsClient, str]:
+    provider = _resolve_voice_provider(voice_provider, stepfun_key=stepfun_key)
+    if provider == STEPFUN_VOICE_PROVIDER:
+        if not stepfun_key.strip():
+            raise ValueError("Step Fun voice provider requires an API key.")
+        return (
+            StepFunASRClient(
+                api_key=stepfun_key.strip(),
+                base_url=stepfun_base_url.strip() or None,
+            ),
+            StepFunTTSClient(
+                api_key=stepfun_key.strip(),
+                voice=stepfun_voice.strip() or DEFAULT_VOICE,
+                base_url=stepfun_base_url.strip() or None,
+            ),
+            "Step Fun",
+        )
+
+    if provider == REMOTE_VOICE_PROVIDER:
+        return (
+            SttClient(
+                base_url=_endpoint_url(stt_url, "transcribe"),
+                api_key=voice_api_key,
+            ),
+            VoxcTtsClient(
+                base_url=_endpoint_url(tts_url, "tts"),
+                api_key=voice_api_key,
+            ),
+            "自建语音服务",
+        )
+
+    raise ValueError(f"Unknown voice provider: {provider}")
+
+
+def _resolve_voice_provider(provider: str | None, *, stepfun_key: str) -> str:
+    normalized = (provider or "").strip().lower()
+    if not normalized:
+        return STEPFUN_VOICE_PROVIDER if stepfun_key.strip() else REMOTE_VOICE_PROVIDER
+    if normalized in {"remote", "remote_url", "self_hosted", "local"}:
+        return REMOTE_VOICE_PROVIDER
+    if normalized in {"stepfun", "step_fun", "step-fun"}:
+        return STEPFUN_VOICE_PROVIDER
+    return normalized
+
+
+def _endpoint_url(base_url: str, endpoint: str) -> str:
+    base = (base_url or "").strip().rstrip("/")
+    if not base:
+        base = DEFAULT_REMOTE_STT_URL if endpoint == "transcribe" else DEFAULT_REMOTE_TTS_URL
+    parts = urlsplit(base)
+    path = parts.path.rstrip("/")
+    if path.rsplit("/", 1)[-1] != endpoint:
+        path = f"{path}/{endpoint}" if path else f"/{endpoint}"
+    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))

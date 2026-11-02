@@ -257,7 +257,7 @@ mod tests {
         );
         assert_eq!(
             command.get_current_dir(),
-            Some(Path::new("/app/resources/runtime"))
+            Some(Path::new("/work/project"))
         );
         assert_eq!(
             args,

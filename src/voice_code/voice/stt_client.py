@@ -21,8 +21,9 @@ class SttClient:
     服务端: FunASR SenseVoiceSmall, POST /transcribe.
     """
 
-    def __init__(self, base_url: str | None = None) -> None:
+    def __init__(self, base_url: str | None = None, api_key: str | None = None) -> None:
         self._base_url = (base_url or os.getenv("STT_BASE_URL") or DEFAULT_STT_URL).rstrip("/")
+        self._api_key = (api_key or os.getenv("STT_API_KEY") or "").strip()
         self._timeout = httpx.Timeout(STT_TIMEOUT_SECONDS)
         logger.info("SttClient initialized: %s", self._base_url)
 
@@ -37,7 +38,7 @@ class SttClient:
                 response = await client.post(
                     self._base_url,
                     content=audio_bytes,
-                    headers={"Content-Type": "audio/wav"},
+                    headers=self._request_headers("audio/wav"),
                 )
                 response.raise_for_status()
         except httpx.TimeoutException:
@@ -69,7 +70,16 @@ class SttClient:
         """检查 STT 服务是否可用。"""
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.get(f"{self._base_url.rsplit('/', 1)[0]}/health")
+                resp = await client.get(
+                    f"{self._base_url.rsplit('/', 1)[0]}/health",
+                    headers=self._request_headers(),
+                )
                 return resp.status_code == 200
         except Exception:
             return False
+
+    def _request_headers(self, content_type: str | None = None) -> dict[str, str]:
+        headers = {} if content_type is None else {"Content-Type": content_type}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        return headers
