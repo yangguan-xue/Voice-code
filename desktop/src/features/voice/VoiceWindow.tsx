@@ -1,6 +1,7 @@
 import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Mic, MicOff, Pause, Send, Trash2, Volume2, VolumeX, X } from "lucide-react";
 import { IconButton } from "../../components/IconButton";
+import { useImeCompositionGuard } from "../../lib/ime-composition";
 import { MarkdownMessage } from "../conversation/MarkdownMessage";
 import type { VoiceLaunchMode } from "./voice-launch-context";
 import type { VoiceMessage, VoiceState } from "./voice-types";
@@ -53,6 +54,7 @@ export function VoiceWindow({
     state.status === "thinking" ||
     state.status === "transcribing" ||
     state.status === "speaking";
+  const { isCompositionEnter, onCompositionStart, onCompositionEnd } = useImeCompositionGuard();
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -60,8 +62,7 @@ export function VoiceWindow({
   }
 
   function handleKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
-    const nativeEvent = event.nativeEvent as KeyboardEvent & { isComposing?: boolean };
-    if (event.key !== "Enter" || nativeEvent.isComposing) {
+    if (event.key !== "Enter" || isCompositionEnter(event)) {
       return;
     }
     event.preventDefault();
@@ -116,6 +117,8 @@ export function VoiceWindow({
             placeholder="输入一句语音指令的文字版本..."
             onChange={(event) => onDraftChange(event.target.value)}
             onKeyDown={handleKeyDown}
+            onCompositionStart={onCompositionStart}
+            onCompositionEnd={onCompositionEnd}
           />
           <IconButton label="发送语音指令" tone="send" type="submit" disabled={isBusy}>
             <Send size={18} strokeWidth={1.9} />

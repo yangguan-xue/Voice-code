@@ -1,4 +1,4 @@
-import { AudioLines, Bot, Plus, Settings, Trash2, X } from "lucide-react";
+import { AudioLines, Bot, Palette, Plus, Settings, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import type {
   ModelConfigInput,
@@ -7,8 +7,9 @@ import type {
   VoiceConfigSummary
 } from "../../lib/bridge/protocol";
 import { DEFAULT_VOICE_CONFIG } from "../../lib/bridge/protocol";
+import { applyTheme, getStoredTheme, type ThemeName } from "../../lib/theme";
 
-type SettingsTab = "model" | "voice";
+type SettingsTab = "model" | "voice" | "appearance";
 
 type ModelSettingsProps = {
   configs: ModelProfileSummary[];
@@ -48,6 +49,7 @@ export function ModelSettings({
   onVoiceSave
 }: ModelSettingsProps) {
   const [activeTab, setActiveTab] = useState<SettingsTab>("model");
+  const [theme, setTheme] = useState<ThemeName>(() => getStoredTheme());
   const [selectedId, setSelectedId] = useState<string | null>(configs[0]?.id ?? null);
   const [form, setForm] = useState<ModelConfigInput>(EMPTY_MODEL_FORM);
   const [voiceForm, setVoiceForm] = useState<VoiceConfigInput>(() =>
@@ -58,6 +60,12 @@ export function ModelSettings({
   const [voiceError, setVoiceError] = useState("");
   const [voiceNotice, setVoiceNotice] = useState("");
   const [isSaving, setIsSaving] = useState(false);
+
+  function selectTheme(next: ThemeName) {
+    setTheme(next);
+    applyTheme(next);
+  }
+
   const [isVoiceSaving, setIsVoiceSaving] = useState(false);
 
   useEffect(() => {
@@ -175,9 +183,48 @@ export function ModelSettings({
             <AudioLines size={16} strokeWidth={1.8} />
             语音
           </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === "appearance"}
+            className={activeTab === "appearance" ? "settings-tab-active" : ""}
+            onClick={() => setActiveTab("appearance")}
+          >
+            <Palette size={16} strokeWidth={1.8} />
+            外观
+          </button>
         </div>
 
-        {activeTab === "model" ? (
+        {activeTab === "appearance" ? (
+          <div className="settings-content settings-content-single" role="tabpanel" aria-label="外观">
+            <div className="theme-options" role="radiogroup" aria-label="界面主题">
+              <button
+                type="button"
+                role="radio"
+                aria-checked={theme === "dark"}
+                className={`theme-option ${theme === "dark" ? "theme-option-active" : ""}`}
+                onClick={() => selectTheme("dark")}
+              >
+                <span className="theme-swatch theme-swatch-dark" aria-hidden="true">
+                  <span /><span /><span /><span /><span />
+                </span>
+                黑色
+              </button>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={theme === "paper"}
+                className={`theme-option ${theme === "paper" ? "theme-option-active" : ""}`}
+                onClick={() => selectTheme("paper")}
+              >
+                <span className="theme-swatch theme-swatch-paper" aria-hidden="true">
+                  <span /><span /><span /><span /><span />
+                </span>
+                蓝白
+              </button>
+            </div>
+          </div>
+        ) : activeTab === "model" ? (
           <div className="settings-content" role="tabpanel" aria-label="模型">
             <aside className="model-config-list" aria-label="已保存的模型配置">
               <button

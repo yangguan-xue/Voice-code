@@ -21,6 +21,7 @@ export type ConversationTurn = {
   finishReason: string;
   tools: ToolEvent[];
   errorText: string;
+  statusNotices: string[];
 };
 
 export type ConversationState = {

@@ -57,7 +57,7 @@ pnpm build
 Windows developer setup:
 
 ```powershell
-cd D:\workspace\reasoning\new
+cd D:\workspace\voice-code
 uv sync
 cd desktop
 pnpm install
@@ -67,7 +67,7 @@ pnpm tauri dev
 Windows build:
 
 ```powershell
-cd D:\workspace\reasoning\new\desktop
+cd D:\workspace\voice-code\desktop
 pnpm test
 pnpm build
 pnpm tauri build
@@ -76,7 +76,7 @@ pnpm tauri build
 Windows backend smoke:
 
 ```powershell
-cd D:\workspace\reasoning\new
+cd D:\workspace\voice-code
 uv run reasoning-desktop-bridge --workspace "$PWD" --port 0
 uv run pytest tests/test_desktop_server.py tests/test_desktop_bridge.py tests/test_desktop_runtime.py -q
 ```
