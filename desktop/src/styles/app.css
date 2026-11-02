@@ -73,9 +73,9 @@ select {
   overflow: hidden;
   padding: 18px 14px 0;
   background:
-    linear-gradient(160deg, rgba(46, 43, 38, 0.92), rgba(21, 24, 21, 0.74)),
+    var(--sidebar-tint),
     var(--bg-surface);
-  border-right: 1px solid rgba(255, 255, 255, 0.06);
+  border-right: 1px solid var(--overlay-soft);
 }
 
 .brand-row {
@@ -104,6 +104,10 @@ select {
   padding: 0 2px;
   font-size: 18px;
   font-weight: 700;
+}
+
+.brand-label {
+  cursor: default;
 }
 
 .primary-actions {
@@ -135,9 +139,9 @@ select {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid var(--overlay-border);
   border-radius: 8px;
-  background: #202120;
+  background: var(--bg-sheet);
   box-shadow: 0 24px 80px rgba(0, 0, 0, 0.48);
 }
 
@@ -158,9 +162,9 @@ select {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid var(--overlay-border);
   border-radius: 8px;
-  background: #202120;
+  background: var(--bg-sheet);
   box-shadow: 0 24px 80px rgba(0, 0, 0, 0.48);
 }
 
@@ -201,7 +205,7 @@ select {
 
 .settings-icon-button:hover,
 .settings-icon-button:focus-visible {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--overlay-hover);
   color: var(--text-primary);
   outline: none;
 }
@@ -243,7 +247,7 @@ select {
 .settings-tabs button:hover,
 .settings-tabs button:focus-visible,
 .settings-tabs .settings-tab-active {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--overlay-hover);
   color: var(--text-primary);
   outline: none;
 }
@@ -267,9 +271,9 @@ select {
   align-items: center;
   gap: 7px;
   padding: 0 11px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--overlay-active);
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.055);
+  background: var(--overlay-soft);
   color: var(--text-primary);
   font-size: var(--font-ui-md);
   font-weight: 700;
@@ -277,8 +281,8 @@ select {
 
 .diagnostics-actions button:hover,
 .diagnostics-actions button:focus-visible {
-  background: rgba(255, 255, 255, 0.09);
-  border-color: rgba(255, 255, 255, 0.16);
+  background: var(--overlay-active);
+  border-color: var(--overlay-border-strong);
   outline: none;
 }
 
@@ -307,7 +311,7 @@ select {
   min-width: 0;
   display: grid;
   grid-template-columns: 140px minmax(0, 1fr);
-  background: rgba(255, 255, 255, 0.035);
+  background: var(--overlay-faint);
 }
 
 .diagnostics-row + .diagnostics-row {
@@ -361,7 +365,7 @@ select {
 
 .diagnostics-row dd button:hover,
 .diagnostics-row dd button:focus-visible {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--overlay-hover);
   color: var(--text-primary);
   outline: none;
 }
@@ -382,9 +386,9 @@ select {
 }
 
 .diagnostics-error {
-  border-color: rgba(255, 116, 82, 0.28);
-  color: #ffad96;
-  background: rgba(74, 31, 22, 0.2);
+  border-color: rgba(var(--danger-rgb), 0.28);
+  color: var(--danger-text);
+  background: var(--danger-bg-soft);
 }
 
 .model-config-list {
@@ -443,7 +447,7 @@ select {
 .model-config-new:hover,
 .model-config-row:hover,
 .model-config-active {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--overlay-hover);
 }
 
 .model-config-form {
@@ -470,7 +474,7 @@ select {
   width: 100%;
   height: 40px;
   padding: 0 11px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--overlay-active);
   border-radius: 6px;
   outline: none;
   background: rgba(0, 0, 0, 0.18);
@@ -479,13 +483,13 @@ select {
 
 .model-config-form input:focus,
 .model-config-form select:focus {
-  border-color: rgba(114, 184, 255, 0.58);
-  box-shadow: 0 0 0 2px rgba(114, 184, 255, 0.12);
+  border-color: rgba(var(--focus-rgb), 0.58);
+  box-shadow: 0 0 0 2px rgba(var(--focus-rgb), 0.12);
 }
 
 .model-config-error {
   margin: 0;
-  color: #ff9b82;
+  color: var(--danger-text);
   font-size: var(--font-ui-md);
 }
 
@@ -516,15 +520,15 @@ select {
 }
 
 .settings-delete-button {
-  border: 1px solid rgba(255, 116, 82, 0.22);
+  border: 1px solid rgba(var(--danger-rgb), 0.22);
   background: transparent;
-  color: #ffad96;
+  color: var(--danger-text);
 }
 
 .settings-save-button {
   border: 0;
   background: var(--text-primary);
-  color: #181918;
+  color: var(--on-bright-text);
 }
 
 .settings-save-button:disabled {
@@ -535,7 +539,7 @@ select {
   width: 100%;
   justify-content: flex-start;
   padding: 0 10px;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--overlay-hover);
   font-size: var(--font-ui-lg);
   font-weight: 650;
 }
@@ -543,12 +547,12 @@ select {
 .voice-task-button {
   width: 34px;
   justify-content: center;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--overlay-soft);
 }
 
 .new-task-button:hover,
 .voice-task-button:hover {
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--overlay-border);
 }
 
 .session-groups {
@@ -626,13 +630,13 @@ select {
 
 .session-archive-button:hover,
 .session-archive-button:focus-visible {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--overlay-hover);
   color: var(--text-primary);
   outline: none;
 }
 
 .session-row-active {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--overlay-active);
   color: var(--text-bright);
 }
 
@@ -653,7 +657,7 @@ select {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-top: 1px solid var(--overlay-soft);
 }
 
 .workbench {
@@ -678,10 +682,10 @@ select {
   display: flex;
   align-items: center;
   padding: 8px 12px;
-  border: 1px solid rgba(255, 116, 82, 0.46);
+  border: 1px solid rgba(var(--danger-rgb), 0.46);
   border-radius: 8px;
-  background: rgba(56, 27, 20, 0.96);
-  color: #ffb29a;
+  background: var(--danger-bg-strong);
+  color: var(--danger-text);
   font-size: var(--font-ui-md);
   line-height: 1.45;
 }
@@ -710,7 +714,7 @@ select {
 
 .bridge-error button:hover,
 .bridge-error button:focus-visible {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--overlay-active);
   outline: none;
 }
 
@@ -738,7 +742,7 @@ select {
 }
 
 .empty-state svg {
-  color: #ff8d62;
+  color: var(--accent-warm);
 }
 
 .empty-state-copy {
@@ -830,6 +834,14 @@ select {
   color: var(--accent-red);
 }
 
+.status-notice {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: calc(var(--font-chat) - 3px);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 .markdown-message {
   color: var(--text-primary);
   font-size: var(--font-chat);
@@ -879,7 +891,7 @@ select {
   padding: 1px 5px;
   border: 1px solid var(--border-secondary);
   border-radius: 5px;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--overlay-soft);
   color: var(--text-bright);
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
   font-size: 0.92em;
@@ -889,7 +901,7 @@ select {
   overflow: hidden;
   border: 1px solid var(--border-secondary);
   border-radius: 8px;
-  background: #0f0f0f;
+  background: var(--bg-code);
 }
 
 .markdown-code-language {
@@ -914,7 +926,8 @@ select {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
   font-size: var(--font-ui-md);
   line-height: 1.6;
-  white-space: pre;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .markdown-table-wrap {
@@ -940,7 +953,7 @@ select {
 .markdown-message th {
   color: var(--text-bright);
   font-weight: 700;
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--overlay-faint);
 }
 
 .markdown-message tr:last-child td {
@@ -982,6 +995,26 @@ select {
 
 .tool-state-running {
   color: var(--accent-yellow);
+  animation: tool-state-spin 0.9s linear infinite;
+}
+
+.tool-state-error {
+  color: var(--accent-red);
+}
+
+@keyframes tool-state-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tool-state-running {
+    animation: none;
+  }
 }
 
 .tool-path-detail {
@@ -994,7 +1027,7 @@ select {
   padding: 8px 9px;
   border: 1px solid var(--border-secondary);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.045);
+  background: var(--overlay-faint);
 }
 
 .tool-path {
@@ -1020,7 +1053,7 @@ select {
 
 .tool-path-copy:hover,
 .tool-path-copy:focus-visible {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--overlay-hover);
   color: var(--text-primary);
   outline: none;
 }
@@ -1034,7 +1067,7 @@ select {
   display: grid;
   grid-template-rows: auto minmax(76px, auto) auto;
   background: var(--bg-composer);
-  border: 1px solid rgba(255, 255, 255, 0.09);
+  border: 1px solid var(--overlay-active);
   border-radius: 8px;
   overflow: hidden;
 }
@@ -1046,7 +1079,7 @@ select {
   gap: 18px;
   padding: 0 16px;
   color: var(--text-primary);
-  background: #1d1d1d;
+  background: var(--bg-bar);
   font-size: var(--font-ui-sm);
   font-weight: 650;
 }
@@ -1091,7 +1124,7 @@ select {
 
 .composer-context-button:hover,
 .composer-context-button:focus-visible {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--overlay-hover);
   outline: none;
 }
 
@@ -1147,13 +1180,13 @@ select {
 .icon-button:hover,
 .permission-mode:hover,
 .model-button:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--overlay-hover);
 }
 
 .permission-mode {
   position: relative;
   padding: 0 8px;
-  color: #ff8d62;
+  color: var(--accent-warm);
   font-weight: 650;
 }
 
@@ -1195,14 +1228,14 @@ select {
 
 .composer-branch select option,
 .model-button option {
-  background: #242424;
+  background: var(--bg-option);
   color: var(--text-primary);
 }
 
 .icon-button-send {
   border-radius: 999px;
   background: var(--text-primary);
-  color: #1a1a1a;
+  color: var(--on-bright-text);
 }
 
 .icon-button-send:hover {
@@ -1225,10 +1258,10 @@ select {
   display: grid;
   gap: 18px;
   padding: 18px;
-  border: 1px solid rgba(255, 141, 98, 0.32);
+  border: 1px solid rgba(var(--accent-warm-rgb), 0.32);
   border-radius: 8px;
   background:
-    linear-gradient(180deg, rgba(43, 38, 33, 0.98), rgba(24, 24, 23, 0.98)),
+    var(--sheet-tint),
     var(--bg-surface);
   box-shadow: 0 18px 70px rgba(0, 0, 0, 0.42);
 }
@@ -1246,8 +1279,8 @@ select {
   display: inline-grid;
   place-items: center;
   border-radius: 8px;
-  background: rgba(255, 141, 98, 0.13);
-  color: #ff9d74;
+  background: var(--accent-warm-bg);
+  color: var(--accent-warm-soft);
 }
 
 .permission-heading {
@@ -1258,7 +1291,7 @@ select {
 
 .permission-kicker {
   margin: 0;
-  color: #ff9d74;
+  color: var(--accent-warm-soft);
   font-size: var(--font-ui-sm);
   font-weight: 760;
 }
@@ -1285,7 +1318,7 @@ select {
   padding: 9px 10px;
   border: 1px solid var(--border-secondary);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.045);
+  background: var(--overlay-faint);
 }
 
 .permission-tool span {
@@ -1335,25 +1368,25 @@ select {
 .permission-action:hover,
 .permission-action:focus-visible {
   outline: none;
-  border-color: rgba(255, 255, 255, 0.22);
-  background: rgba(255, 255, 255, 0.09);
+  border-color: var(--overlay-border-max);
+  background: var(--overlay-active);
 }
 
 .permission-action-primary {
-  border-color: rgba(77, 214, 121, 0.34);
-  background: rgba(77, 214, 121, 0.14);
-  color: #9df0b9;
+  border-color: rgba(var(--success-rgb), 0.34);
+  background: rgba(var(--success-rgb), 0.14);
+  color: var(--success-text);
 }
 
 .permission-action-primary:hover,
 .permission-action-primary:focus-visible {
-  border-color: rgba(77, 214, 121, 0.5);
-  background: rgba(77, 214, 121, 0.2);
+  border-color: rgba(var(--success-rgb), 0.5);
+  background: rgba(var(--success-rgb), 0.2);
 }
 
 .permission-action-deny {
-  border-color: rgba(255, 116, 82, 0.28);
-  color: #ffad96;
+  border-color: rgba(var(--danger-rgb), 0.28);
+  color: var(--danger-text);
 }
 
 .permission-action-secondary {
@@ -1377,7 +1410,7 @@ select {
   padding: 20px;
   border: 1px solid var(--border-secondary);
   border-radius: 8px;
-  background: #1c1c1c;
+  background: var(--bg-bar);
 }
 
 .voice-mode-copy {
@@ -1409,7 +1442,7 @@ select {
 .voice-mode-cancel {
   border: 1px solid var(--border-secondary);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.045);
+  background: var(--overlay-faint);
   color: var(--text-primary);
 }
 
@@ -1426,8 +1459,8 @@ select {
 .voice-mode-actions button:focus-visible,
 .voice-mode-cancel:hover,
 .voice-mode-cancel:focus-visible {
-  border-color: rgba(255, 141, 98, 0.62);
-  background: rgba(255, 141, 98, 0.1);
+  border-color: rgba(var(--accent-warm-rgb), 0.62);
+  background: rgba(var(--accent-warm-rgb), 0.1);
   outline: none;
 }
 
@@ -1520,3 +1553,73 @@ select {
     grid-template-columns: 1fr;
   }
 }
+
+/* ========== 外观设置 ========== */
+.theme-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  grid-auto-rows: min-content;
+}
+
+.theme-option {
+  border: 1px solid var(--border-primary);
+  border-radius: 10px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+  cursor: pointer;
+  font-size: var(--font-ui-md);
+  text-align: left;
+}
+
+.theme-option:hover {
+  border-color: var(--border-secondary);
+}
+
+.theme-option-active {
+  border-color: rgba(var(--focus-rgb), 0.58);
+  box-shadow: 0 0 0 2px rgba(var(--focus-rgb), 0.12);
+}
+
+.theme-swatch {
+  width: 100%;
+  height: 56px;
+  border-radius: 6px;
+  border: 1px solid var(--border-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+}
+
+.theme-swatch-dark {
+  background: #0b0b0b;
+}
+
+.theme-swatch-paper {
+  background: #f4f7fc;
+}
+
+.theme-swatch span {
+  display: block;
+  width: 5px;
+  border-radius: 3px;
+}
+
+.theme-swatch-dark span {
+  background: #df6a5c;
+}
+
+.theme-swatch-paper span {
+  background: #2f6fdd;
+}
+
+.theme-swatch span:nth-child(1) { height: 12px; }
+.theme-swatch span:nth-child(2) { height: 22px; }
+.theme-swatch span:nth-child(3) { height: 30px; }
+.theme-swatch span:nth-child(4) { height: 22px; }
+.theme-swatch span:nth-child(5) { height: 12px; }

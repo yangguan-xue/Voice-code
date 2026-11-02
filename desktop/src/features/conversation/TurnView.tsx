@@ -1,4 +1,4 @@
-import { CheckCircle2, Clipboard, Loader2, TerminalSquare } from "lucide-react";
+import { CheckCircle2, Clipboard, Loader2, TerminalSquare, XCircle } from "lucide-react";
 import { useState } from "react";
 import { MarkdownMessage } from "./MarkdownMessage";
 import type { ConversationTurn, ToolEvent } from "./types";
@@ -17,6 +17,11 @@ export function TurnView({ turn }: TurnViewProps) {
       <div className="message-row message-row-assistant" aria-label="模型消息">
         <div className="assistant-message">
           {turn.reasoningText ? <p className="reasoning-turn">{turn.reasoningText}</p> : null}
+          {turn.statusNotices.map((notice, index) => (
+            <p key={`notice-${index}`} className="status-notice">
+              {notice}
+            </p>
+          ))}
           {turn.tools.map((tool) => (
             <ToolRow key={tool.id} tool={tool} />
           ))}
@@ -30,6 +35,7 @@ export function TurnView({ turn }: TurnViewProps) {
 
 function ToolRow({ tool }: { tool: ToolEvent }) {
   const isDone = tool.status === "completed";
+  const isError = tool.status === "error";
   const writtenPath = getWrittenFilePath(tool);
   return (
     <div className={writtenPath ? "tool-row tool-row-with-detail" : "tool-row"}>
@@ -43,6 +49,8 @@ function ToolRow({ tool }: { tool: ToolEvent }) {
         )}
         {isDone ? (
           <CheckCircle2 size={15} strokeWidth={1.8} className="tool-state" />
+        ) : isError ? (
+          <XCircle size={15} strokeWidth={1.8} className="tool-state tool-state-error" />
         ) : (
           <Loader2 size={15} strokeWidth={1.8} className="tool-state tool-state-running" />
         )}

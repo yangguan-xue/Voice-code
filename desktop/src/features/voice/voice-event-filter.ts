@@ -80,6 +80,10 @@ function bridgeEventToVoiceUiEvent(event: BridgeEvent): VoiceUiEvent | null {
       if (readString(event.payload, "toolCallId")) {
         return null;
       }
+      const status = readString(event.payload, "status");
+      if (status === "compact" || status === "fallback" || status === "resume") {
+        return null;
+      }
       const message = humanizeError(readString(event.payload, "content"));
       return message ? { type: "voice.error", message, recoverable: true } : null;
     }

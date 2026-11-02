@@ -2,9 +2,12 @@ import { Component, StrictMode, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { WindowEntry } from "./app/window-entry";
 import { installFrontendDiagnostics, reportFrontendError } from "./lib/desktop/frontend-diagnostics";
+import { applyTheme, getStoredTheme } from "./lib/theme";
 import "./styles/tokens.css";
 import "./styles/app.css";
 import "./styles/voice.css";
+
+applyTheme(getStoredTheme());
 
 const root = document.getElementById("root");
 
