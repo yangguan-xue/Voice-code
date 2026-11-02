@@ -35,6 +35,10 @@ def _cleanup_orphaned_tool_calls(
                 else:
                     surviving.append(tc)
             if orphaned_count > 0:
+                # 全部 tool_call 都被孤立且没有文本内容时，整条消息已是空壳，
+                # 直接丢弃，避免上游 API 报 "assistant must not be empty" (400)。
+                if not surviving and not msg.content:
+                    continue
                 new_msg = AIMessage(
                     content=msg.content,
                     tool_calls=surviving if surviving else [],

@@ -130,7 +130,7 @@ def _resolve_profile(
         )
 
     raw = profiles[profile]
-    resolved: dict[str, str | int] = {}
+    resolved: dict[str, str | int | float] = {}
 
     model_name = raw.get("model_name")
     base_url = raw.get("base_url")
@@ -152,6 +152,10 @@ def _resolve_profile(
     if isinstance(max_tokens, int) and max_tokens > 0:
         resolved["max_tokens"] = max_tokens
 
+    temperature_value = raw.get("temperature")
+    if isinstance(temperature_value, (int, float)) and not isinstance(temperature_value, bool):
+        resolved["temperature"] = float(temperature_value)
+
     return resolved
 
 
@@ -162,7 +166,7 @@ def init_model(
     base_url: str | None = None,
     model_name: str | None = None,
     max_tokens: int | None = None,
-    temperature: float = 0.0,
+    temperature: float | None = None,
     timeout: float = 60.0,
 ) -> ChatOpenAI:
     """初始化 ChatOpenAI 客户端。
@@ -175,7 +179,9 @@ def init_model(
         base_url: API 地址。默认从 LLM_BASE_URL 读取，回退到 https://api.deepseek.com/v1。
         model_name: 模型名称。默认从 LLM_MODEL_NAME 读取，回退到 deepseek-v4-pro。
         max_tokens: 单次输出最大 token 数。默认从 profile 读取；未配置则由服务端决定。
-        temperature: 温度参数，默认 0.0。
+        temperature: 温度参数。默认 None 表示不在请求中携带该字段，由服务端决定
+            （部分模型如 Kimi k3 仅允许 temperature=1，显式传 0 会被拒绝）。
+            也可在 profile 中通过 temperature 配置。
         timeout: 单次请求超时秒数，默认 60 秒。
     """
     env_values = _read_env_file(_ENV_FILE)
@@ -204,6 +210,7 @@ def init_model(
         or "deepseek-v4-pro"
     )
     _max_tokens = max_tokens or profile_values.get("max_tokens")
+    _temperature = temperature if temperature is not None else profile_values.get("temperature")
 
     client_kwargs = _loopback_client_kwargs(_base_url, timeout)
 
@@ -211,7 +218,7 @@ def init_model(
         model=_model_name,
         base_url=_base_url,
         api_key=_api_key,  # type: ignore[arg-type]
-        temperature=temperature,
+        temperature=_temperature,  # type: ignore[arg-type]
         timeout=timeout,
         max_tokens=_max_tokens,  # type: ignore[arg-type]
         **client_kwargs,

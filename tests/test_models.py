@@ -34,6 +34,7 @@ context_window = 1000000
 base_url = "https://api.deepseek.com/v1"
 model_name = "deepseek-v4-flash"
 api_key_env = "LLM_API_KEY"
+temperature = 1
 
 [profiles.local_openai]
 base_url = "http://127.0.0.1:8000/v1"
@@ -166,3 +167,19 @@ api_key = "sk-plaintext"
 
     with pytest.raises(ValueError, match="Move the secret to an environment variable"):
         models.list_model_profiles()
+
+
+def test_default_temperature_not_sent(temp_config: Path) -> None:
+    model = models.init_model(profile="deepseek")
+    assert model.kwargs["temperature"] is None
+
+
+def test_profile_temperature_respected(temp_config: Path) -> None:
+    model = models.init_model(profile="deepseek_flash")
+    assert model.kwargs["temperature"] == 1.0
+
+
+def test_explicit_temperature_overrides_profile(temp_config: Path) -> None:
+    model = models.init_model(profile="deepseek_flash", temperature=0.5)
+    assert model.kwargs["temperature"] == 0.5
+

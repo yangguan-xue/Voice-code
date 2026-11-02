@@ -41,9 +41,10 @@ class StepFunASRClient:
     覆盖 SttClient 的同名接口，可无缝替换。
     """
 
-    def __init__(self, api_key: str | None = None) -> None:
+    def __init__(self, api_key: str | None = None, base_url: str | None = None) -> None:
         self._api_key = api_key or os.getenv(STEPFUN_API_KEY_ENV, "")
-        self._url = f"{STEPFUN_BASE}/audio/asr/sse"
+        base = (base_url or "").strip().rstrip("/") or STEPFUN_BASE
+        self._url = f"{base}/audio/asr/sse"
         if not self._api_key:
             logger.warning("StepFunASRClient: no API key set (env STEPFUN_API_KEY)")
         logger.info("StepFunASRClient initialized: %s", self._url)
@@ -124,9 +125,11 @@ class StepFunTTSClient:
         api_key: str | None = None,
         voice: str = DEFAULT_VOICE,
         response_format: str = DEFAULT_TTS_FORMAT,
+        base_url: str | None = None,
     ) -> None:
         self._api_key = api_key or os.getenv(STEPFUN_API_KEY_ENV, "")
-        self._url = f"{STEPFUN_BASE}/audio/speech"
+        base = (base_url or "").strip().rstrip("/") or STEPFUN_BASE
+        self._url = f"{base}/audio/speech"
         self._voice = voice
         self._format = response_format
         if not self._api_key:

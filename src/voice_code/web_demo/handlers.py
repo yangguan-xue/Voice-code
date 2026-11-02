@@ -12,7 +12,7 @@ from typing import Any, Protocol
 
 from pydantic import ValidationError
 
-from voice_code.desktop.protocol import BridgeEvent
+from voice_code.desktop.protocol import BridgeEvent, _preview_text
 from voice_code.web_demo.protocol import (
     PermissionResolvePayload,
     WebDemoEvent,
@@ -67,6 +67,8 @@ def sanitize_bridge_event_for_web_demo(
     sandbox_path: Path,
 ) -> BridgeEvent | WebDemoEvent:
     payload = _sanitize_sandbox_value(event.payload, sandbox_path=sandbox_path)
+    if isinstance(payload, dict) and "toolResult" in payload and "resultPreview" in payload:
+        payload["resultPreview"] = _preview_text(str(payload["toolResult"]))
     payload = _strip_runtime_noise_from_payload(payload)
     if payload == event.payload:
         return event

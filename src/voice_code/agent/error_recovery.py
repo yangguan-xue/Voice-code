@@ -27,3 +27,18 @@ def is_model_overloaded_error(error: Exception) -> bool:
 
     body = str(error).lower()
     return any(pattern in body for pattern in ("overloaded", "capacity", "rate limit"))
+
+
+def format_provider_error(error: Exception, *, max_detail: int = 200) -> str:
+    """Build a user-facing provider error message that keeps the real cause visible."""
+    status_code = getattr(error, "status_code", None)
+    detail = str(error).strip().replace("\n", " ")
+    if len(detail) > max_detail:
+        detail = detail[:max_detail].rstrip() + "…"
+    prefix = "Model request failed"
+    if status_code:
+        prefix = f"{prefix} (HTTP {status_code})"
+    if detail:
+        return f"{prefix}: {detail}"
+    return f"{prefix}: {type(error).__name__}. Please retry."
+

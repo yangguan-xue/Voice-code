@@ -18,6 +18,7 @@ from voice_code.agent.abort import AbortSignal
 from voice_code.agent.error_recovery import (
     MAX_OUTPUT_RECOVERY,
     MAX_OUTPUT_RECOVERY_MSG,
+    format_provider_error,
     get_finish_reason,
     is_model_overloaded_error,
 )
@@ -481,7 +482,8 @@ async def agent_loop(
 
                     if not is_context_overflow_error(e):
                         logger.error(
-                            "LLM request failed",
+                            "LLM request failed: %s",
+                            format_provider_error(e, max_detail=300),
                             extra={
                                 "event": EventName.LLM_REQUEST_FAILED,
                                 "provider": provider,
