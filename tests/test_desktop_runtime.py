@@ -27,6 +27,7 @@ async def test_make_desktop_agent_runner_streams_agent_loop_in_worker(monkeypatc
     captured: dict[str, object] = {}
     permission_context = PermissionContext(session_id="session-1")
     runtime = SimpleNamespace(
+        cwd=".",
         tools=["tool"],
         prompt="system prompt",
         model="model",
@@ -106,6 +107,7 @@ async def test_make_desktop_agent_runner_refreshes_resume_messages_after_turn(
     refreshed_messages = ["system", "human", "ai", "tool"]
     permission_context = PermissionContext(session_id="session-1")
     runtime = SimpleNamespace(
+        cwd=".",
         tools=[],
         prompt="system prompt",
         model="model",
@@ -153,6 +155,7 @@ async def test_make_desktop_agent_runner_replaces_stale_resumed_system_prompt(
     captured: dict[str, object] = {}
     permission_context = PermissionContext(session_id="session-1")
     runtime = SimpleNamespace(
+        cwd=".",
         tools=[],
         prompt="new prompt says gpt-company",
         model="model",

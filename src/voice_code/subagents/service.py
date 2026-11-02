@@ -160,7 +160,13 @@ class SubagentService:
         return self._registry
 
     def bind_event_loop(self, event_loop: asyncio.AbstractEventLoop) -> None:
-        self._event_loop = event_loop
+        # 只在当前绑定的 loop 已关闭/未运行时才换绑。
+        # 桌面端每轮 turn 在 worker 线程里 asyncio.run() 一个临时 loop，
+        # 若无条件换绑，后台子 agent 会被绑定到临时 loop 上，
+        # turn 结束 asyncio.run() 关闭 loop 时全部被杀掉。
+        current = self._event_loop
+        if current.is_closed() or not current.is_running():
+            self._event_loop = event_loop
 
     def has_runtime_state(self) -> bool:
         return bool(self.list_tasks() or self._notifications or self._background_tasks)

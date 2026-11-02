@@ -109,7 +109,9 @@ impl DeveloperUvRuntime {
 impl AppOwnedRuntime {
     fn command(&self, kind: BridgeCommandKind, workspace: &Path) -> Command {
         let mut command = Command::new(&self.launcher);
-        command.current_dir(&self.runtime_root);
+        // 工作目录设为用户工作区而非 runtime 目录：
+        // 桥内工具的相对路径会基于进程 cwd 兜底，launcher 自身路径解析与 cwd 无关。
+        command.current_dir(workspace);
         command
             .arg(kind.entrypoint())
             .args(kind.bridge_args())

@@ -284,3 +284,39 @@ def test_context_collapse_preserves_recent_turns():
     result, stats = collapse_old_turns(messages, min_turns_before_collapse=1)
     assert any(isinstance(m, ToolMessage) and m.tool_call_id == "2" for m in result)
     assert stats.active is True
+
+
+def _ai_with_tool_call(call_id: str, content: str = "") -> AIMessage:
+    return AIMessage(
+        content=content,
+        tool_calls=[{"id": call_id, "name": "read", "args": {"path": "x"}}],
+    )
+
+
+def test_snip_drops_empty_shell_ai_message_after_orphan_cleanup():
+    messages = [
+        SystemMessage(content="sys"),
+        HumanMessage(content="u1"),
+        _ai_with_tool_call("1"),
+        ToolMessage(content="r1", tool_call_id="1"),
+        HumanMessage(content="u2"),
+        _ai_with_tool_call("2", content="有文字内容"),
+        ToolMessage(content="r2", tool_call_id="2"),
+        HumanMessage(content="u3"),
+        _ai_with_tool_call("3"),
+        ToolMessage(content="r3", tool_call_id="3"),
+        HumanMessage(content="u4"),
+        _ai_with_tool_call("4"),
+        ToolMessage(content="r4", tool_call_id="4"),
+    ]
+    result, stats = snip_compact(messages, keep_recent_turns=2)
+
+    assert stats.active is True
+    # 空壳 AI 消息（无文本、tool_calls 全部被孤立清理）必须被丢弃，
+    # 否则上游 API 会报 400 "assistant must not be empty"。
+    assert not any(
+        isinstance(m, AIMessage) and not m.content and not m.tool_calls for m in result
+    )
+    # 带文字内容的 AI 消息即使 tool_calls 被清理也要保留
+    assert any(isinstance(m, AIMessage) and m.content == "有文字内容" for m in result)
+
