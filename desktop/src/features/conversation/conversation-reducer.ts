@@ -68,6 +68,7 @@ export function conversationReducer(
       return updateTurn(state, event.turnId, (turn) => {
         const toolCallId = readString(event.payload, "toolCallId");
         const content = readString(event.payload, "content");
+        const status = readString(event.payload, "status");
         if (toolCallId) {
           return {
             ...turn,
@@ -82,6 +83,13 @@ export function conversationReducer(
                 : tool
             ),
             status: "streaming"
+          };
+        }
+
+        if (isStatusNotice(status, content)) {
+          return {
+            ...turn,
+            statusNotices: [...turn.statusNotices, content]
           };
         }
 
@@ -113,8 +121,17 @@ function createTurn(event: BridgeEvent): ConversationTurn {
     status: "streaming",
     finishReason: "",
     tools: [],
-    errorText: ""
+    errorText: "",
+    statusNotices: []
   };
+}
+
+function isStatusNotice(status: string, content: string): boolean {
+  if (status === "compact" || status === "fallback" || status === "resume") {
+    return true;
+  }
+  const lowered = content.toLowerCase();
+  return lowered.startsWith("compact:") || lowered.startsWith("conversation compacted");
 }
 
 function upsertTurn(state: ConversationState, nextTurn: ConversationTurn): ConversationState {

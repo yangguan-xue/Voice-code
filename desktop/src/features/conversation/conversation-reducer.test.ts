@@ -148,4 +148,70 @@ describe("conversationReducer", () => {
     expect(state.turns[0]?.status).toBe("completed");
     expect(state.turns[0]?.tools[0]?.status).toBe("completed");
   });
+
+  it("records compact notices as status lines instead of errors", () => {
+    const events: BridgeEvent[] = [
+      {
+        type: "event",
+        event: "agent.turn.started",
+        sessionId: "s1",
+        turnId: 1,
+        payload: { userText: "写个文件" }
+      },
+      {
+        type: "event",
+        event: "agent.error",
+        sessionId: "s1",
+        turnId: 1,
+        payload: { content: "compact: micro ~1250 tok", status: "compact" }
+      },
+      {
+        type: "event",
+        event: "agent.text.delta",
+        sessionId: "s1",
+        turnId: 1,
+        payload: { content: "已创建 hello.txt" }
+      },
+      {
+        type: "event",
+        event: "agent.turn.finish",
+        sessionId: "s1",
+        turnId: 1,
+        payload: { finishReason: "completed" }
+      }
+    ];
+
+    const state = events.reduce(conversationReducer, createInitialConversationState());
+
+    expect(state.turns[0]?.status).toBe("completed");
+    expect(state.turns[0]?.errorText).toBe("");
+    expect(state.turns[0]?.statusNotices).toEqual(["compact: micro ~1250 tok"]);
+  });
+
+  it("keeps legacy compact text without a status tag out of the error state", () => {
+    const events: BridgeEvent[] = [
+      {
+        type: "event",
+        event: "agent.turn.started",
+        sessionId: "s1",
+        turnId: 1,
+        payload: { userText: "继续" }
+      },
+      {
+        type: "event",
+        event: "agent.error",
+        sessionId: "s1",
+        turnId: 1,
+        payload: { content: "Conversation compacted (reactive) — retrying" }
+      }
+    ];
+
+    const state = events.reduce(conversationReducer, createInitialConversationState());
+
+    expect(state.turns[0]?.status).toBe("streaming");
+    expect(state.turns[0]?.errorText).toBe("");
+    expect(state.turns[0]?.statusNotices).toEqual([
+      "Conversation compacted (reactive) — retrying"
+    ]);
+  });
 });

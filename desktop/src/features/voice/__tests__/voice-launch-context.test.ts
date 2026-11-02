@@ -29,7 +29,8 @@ describe("voice launch context", () => {
               status: "completed"
             }
           ],
-          errorText: ""
+          errorText: "",
+          statusNotices: []
         }
       ]
     };

@@ -1,6 +1,5 @@
 import {
   Archive,
-  ChevronDown,
   CircleHelp,
   Info,
   PenLine,
@@ -31,10 +30,7 @@ export function SessionSidebar({
   return (
     <aside className="session-sidebar" role="navigation" aria-label="项目和任务">
       <div className="brand-row">
-        <button className="brand-button" type="button" aria-label="切换工作区">
-          <span>语码</span>
-          <ChevronDown size={15} strokeWidth={1.8} />
-        </button>
+        <span className="brand-button brand-label">语码</span>
         <button className="sidebar-search" type="button" aria-label="搜索任务">
           <Search size={18} strokeWidth={1.8} />
         </button>

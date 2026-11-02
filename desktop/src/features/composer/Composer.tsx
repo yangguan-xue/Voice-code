@@ -1,6 +1,7 @@
 import { ArrowUp, GitBranch, HardDrive, Mic, Paperclip, ShieldCheck, Square } from "lucide-react";
 import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { WorkspaceSummary } from "../../app/fixtures";
+import { useImeCompositionGuard } from "../../lib/ime-composition";
 import type { ModelProfileSummary } from "../../lib/bridge/protocol";
 import { IconButton } from "../../components/IconButton";
 
@@ -39,6 +40,8 @@ export function Composer({
   onVoiceOpen,
   onInterrupt
 }: ComposerProps) {
+  const { isCompositionEnter, onCompositionStart, onCompositionEnd } = useImeCompositionGuard();
+
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (isBusy) {
@@ -49,8 +52,7 @@ export function Composer({
   }
 
   function handlePromptKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
-    const nativeEvent = event.nativeEvent as KeyboardEvent & { isComposing?: boolean };
-    if (event.key !== "Enter" || event.shiftKey || nativeEvent.isComposing) {
+    if (event.key !== "Enter" || event.shiftKey || isCompositionEnter(event)) {
       return;
     }
 
@@ -103,6 +105,8 @@ export function Composer({
         rows={3}
         onChange={(event) => onChange(event.target.value)}
         onKeyDown={handlePromptKeyDown}
+        onCompositionStart={onCompositionStart}
+        onCompositionEnd={onCompositionEnd}
       />
 
       <div className="composer-actions">
